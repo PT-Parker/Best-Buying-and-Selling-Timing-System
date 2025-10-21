@@ -1,0 +1,405 @@
+tasks:
+  install_deps:
+    description: 安裝回測與產投影片所需套件（pandas/numpy/matplotlib/yfinance/pyyaml/python-pptx）
+    run:
+      windows: |
+        powershell -NoProfile -NonInteractive -Command "& {
+          if (-not (Test-Path requirements.txt)) {
+            @'
+            pandas
+            numpy
+            matplotlib
+            yfinance
+            PyYAML
+            python-pptx
+            '@ | Set-Content -Encoding UTF8 -Path requirements.txt
+          }
+          python -m pip install -r requirements.txt
+        }"
+      posix: |
+        bash -lc '
+          if [ ! -f requirements.txt ]; then
+            printf "%s\n" \
+              "pandas" \
+              "numpy" \
+              "matplotlib" \
+              "yfinance" \
+              "PyYAML" \
+              "python-pptx" > requirements.txt
+          fi
+          python -m pip install -r requirements.txt
+        '
+    outputs: [requirements.txt]
+
+  scaffold_cli:
+    description: 產生頂層 cli.py 與簡易投影片腳本（scripts/build_slides.py）
+    run:
+      windows: |
+        powershell -NoProfile -NonInteractive -Command "& {
+          Write-Host 'Files are already present in repo: cli.py, scripts/build_slides.py'
+        }"
+      posix: |
+        bash -lc 'echo "Files are already present in repo: cli.py, scripts/build_slides.py"'
+    outputs: [cli.py, scripts/build_slides.py]
+
+  backtest_all:
+    description: 依 config/rules.yaml 對所有 symbols 執行回測（輸出 charts 與 trades.csv）
+    run:
+      windows: "python cli.py backtest-all"
+      posix: "python cli.py backtest-all"
+    outputs:
+      - backtest_out
+
+  signals_today:
+    description: 產出今日訊號彙總（signals_today.csv）
+    run:
+      windows: "python cli.py signals-today"
+      posix: "python cli.py signals-today"
+    outputs:
+      - signals_today.csv
+
+  build_slides:
+    description: 生成 20 頁簡報骨架並嘗試嵌入 backtest_out/*_equity.png
+    run:
+      windows: "python scripts\\build_slides.py"
+      posix: "python scripts/build_slides.py"
+    outputs:
+      - slides/final_20pages.pptx
+
+  package_deliverables:
+    description: 打包交付物（slides + backtest_out + config + n8n/workflow*.json）
+    run:
+      windows: |
+        powershell -NoProfile -NonInteractive -Command "& {
+          New-Item -ItemType Directory deliverables -ea 0 | Out-Null
+          Compress-Archive -Path slides, backtest_out, config, n8n -DestinationPath deliverables\final_package.zip -Force
+          Write-Host 'Saved deliverables\final_package.zip'
+        }"
+      posix: |
+        bash -lc '
+          mkdir -p deliverables
+          zip -r deliverables/final_package.zip slides backtest_out config n8n >/dev/null
+          echo "Saved deliverables/final_package.zip"
+        '
+    outputs:
+      - deliverables/final_package.zip
+
+  demo_all:
+    description: 依序執行 backtest_all → signals_today → build_slides → package_deliverables，並檢查產物
+    run:
+      windows: |
+        cmd /V:ON /C ^
+        speckit run backtest_all && ^
+        speckit run signals_today && ^
+        speckit run build_slides && ^
+        speckit run package_deliverables && ^
+        (IF EXIST backtest_out\2330.TW_equity.png (echo ✅ backtest_out\2330.TW_equity.png) ELSE (echo ❌缺少 backtest_out\2330.TW_equity.png && exit /b 1)) && ^
+        (IF EXIST signals_today.csv (echo ✅ signals_today.csv) ELSE (echo ❌缺少 signals_today.csv && exit /b 1)) && ^
+        (IF EXIST slides\final_20pages.pptx (echo ✅ slides\final_20pages.pptx) ELSE (echo ❌缺少 slides\final_20pages.pptx && exit /b 1)) && ^
+        (IF EXIST deliverables\final_package.zip (echo ✅ deliverables\final_package.zip) ELSE (echo ❌缺少 deliverables\final_package.zip && exit /b 1))
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          speckit run backtest_all
+          speckit run signals_today
+          speckit run build_slides
+          speckit run package_deliverables
+          test -f backtest_out/2330.TW_equity.png  && echo "✅ backtest_out/2330.TW_equity.png"
+          test -f signals_today.csv               && echo "✅ signals_today.csv"
+          test -f slides/final_20pages.pptx       && echo "✅ slides/final_20pages.pptx"
+          test -f deliverables/final_package.zip  && echo "✅ deliverables/final_package.zip"
+          echo " 全部完成
+        "
+        '
+    outputs:
+      - backtest_out/2330.TW_equity.png
+      - signals_today.csv
+      - slides/final_20pages.pptx
+      - deliverables/final_package.zip
+    success_criteria:
+      - "四個檔案皆存在且非空"
+
+  start_monitor:
+    description: 啟動盤中監控（twstock 即時輪詢，背景執行）
+    run:
+      windows: |
+        powershell -NoProfile -NonInteractive -Command "& {
+          $ErrorActionPreference = 'Stop'
+          $py = (Get-Command python).Source
+          Start-Process -WindowStyle Hidden -FilePath $py -ArgumentList 'scripts\realtime_monitor.py'
+          Start-Sleep -Seconds 2
+          if (Test-Path state\monitor.pid) { Get-Content state\monitor.pid | Write-Host } else { Write-Error 'monitor.pid not found'; exit 1 }
+        }"
+      posix: |
+        bash -lc '
+          nohup python scripts/realtime_monitor.py >/dev/null 2>&1 &
+          sleep 2
+          test -f state/monitor.pid && cat state/monitor.pid || { echo "monitor.pid not found" >&2; exit 1; }
+        '
+    outputs:
+      - state/monitor.pid
+
+  stop_monitor:
+    description: 停止盤中監控（讀取 PID 並終止程序）
+    run:
+      windows: |
+        powershell -NoProfile -Command "& {
+          $p=Get-Content state\monitor.pid -ErrorAction SilentlyContinue;
+          if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue; Write-Host 'Stopped PID' $p } else { Write-Host 'No PID found' }
+        }"
+      posix: |
+        bash -lc '
+          if [ -f state/monitor.pid ]; then
+            kill -TERM $(cat state/monitor.pid) || true
+            echo "Stopped PID $(cat state/monitor.pid)"
+          else
+            echo "No PID found"
+          fi
+        '
+    outputs:
+      - logs/alerts.csv
+
+  monitor_smoketest:
+    description: 煙霧測試（非交易時段也可跑；2 分鐘後自動結束）
+    run:
+      windows: |
+        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\monitor_smoketest.ps1
+      posix: |
+        bash -lc '
+          set -e
+          pip install -r requirements.txt
+          PYTHONIOENCODING=utf-8 python scripts/realtime_monitor.py --force --max-seconds 120
+        '
+    outputs:
+      - logs/alerts.csv
+    success_criteria:
+      - "logs/alerts.csv 存在（可能沒有訊號也沒關係，只驗證流程通）"
+
+  monitor_live:
+    description: 啟動盤中即時監控（>10 檔台股、EMA/RSI、LINE/Discord/n8n 推播、跨日續看）
+    run:
+      windows: |
+        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\monitor_live.ps1
+      posix: |
+        bash -lc '
+          set -e
+          pip install -r requirements.txt
+          PYTHONIOENCODING=utf-8 python scripts/realtime_monitor.py
+        '
+    outputs:
+      - state/monitor.pid
+      - logs/alerts.csv
+
+  
+
+  n8n_activate_workflow:
+    description: ②啟用 workflow（POST /api/v1/workflows/{id}/activate）
+    run:
+      windows: "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\n8n_activate_workflow.ps1"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          api="${N8N_API_URL:-http://127.0.0.1:5678}"
+          : "${N8N_API_KEY:?N8N_API_KEY not set}"
+          id="${N8N_WORKFLOW_ID:-$(cat .specify/memory/.last_n8n_workflow_id)}"
+          curl -sS -H "X-N8N-API-KEY: $N8N_API_KEY" -H "Content-Type: application/json" \
+            -X POST "$api/api/v1/workflows/$id/activate" -d '{}' >/dev/null
+          echo "Activated workflow $id"
+        '
+
+  switch_notify_to_webhook:
+    description: ③將 config/watchlist.yaml 的 notify 切換為 webhook 並指定 generic_webhook_env=N8N_WEBHOOK_URL
+    run:
+      windows: "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\switch_notify_to_webhook.ps1"
+      posix: |
+        bash -lc 'python -c "import yaml,sys; p=\"config/watchlist.yaml\"; d=yaml.safe_load(open(p,encoding=\"utf-8\")) or {}; d.setdefault(\"notify\",{}); d[\"notify\"][\"mode\"]=\"webhook\"; d[\"notify\"][\"generic_webhook_env\"]=\"N8N_WEBHOOK_URL\"; open(p,\"w\",encoding=\"utf-8\").write(yaml.safe_dump(d,allow_unicode=True,sort_keys=False)); print(\"Updated\",p)"'
+    outputs:
+      - config/watchlist.yaml
+
+  set_webhook_env_local:
+    description: ④設定保存 N8N_WEBHOOK_URL（優先使用 .specify/memory/n8n_webhook_url.txt）
+    run:
+      windows: "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\n8n_set_webhook_env_local.ps1"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          if [ -z "${N8N_WEBHOOK_URL:-}" ] && [ -f .specify/memory/n8n_webhook_url.txt ]; then
+            N8N_WEBHOOK_URL="$(cat .specify/memory/n8n_webhook_url.txt)"
+          fi
+          if [ -z "${N8N_WEBHOOK_URL:-}" ]; then
+            base="${N8N_BASE_URL:-${N8N_API_URL:-http://127.0.0.1:5678}}"
+            N8N_WEBHOOK_URL="${base%/}/webhook/tw-live-signal"
+          fi
+          mkdir -p .specify/memory
+          printf "%s" "$N8N_WEBHOOK_URL" > .specify/memory/n8n_webhook_url.txt
+          echo "N8N_WEBHOOK_URL=$N8N_WEBHOOK_URL"
+        '
+    outputs:
+      - .specify/memory/n8n_webhook_url.txt
+
+  test_n8n_webhook:
+    description: ⑤送一筆假資料到 n8n Webhook 驗證（需 N8N_WEBHOOK_URL）
+    run:
+      windows: "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\n8n_test_webhook.ps1"
+      posix: |
+        bash -lc '
+          : "${N8N_WEBHOOK_URL:?N8N_WEBHOOK_URL not set}"
+          payload=$(python -c "import json,datetime; print(json.dumps({'time':datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'symbol':'2330','action':'BUY','price':1450,'reason':'smoke'}))")
+          curl -s -X POST "$N8N_WEBHOOK_URL" -H "Content-Type: application/json" -d "$payload" >/dev/null
+          echo "Sent test payload to $N8N_WEBHOOK_URL"
+        '
+    outputs: []
+  
+  n8n_update_email_in_workflow:
+    description: 用 EMAIL_FROM/EMAIL_TO 更新工作流中的 Email 節點參數（From/To）
+    run:
+      windows: |
+        powershell -NoProfile -Command "& { $ErrorActionPreference='Stop'; if (-not $env:N8N_API_URL) { $env:N8N_API_URL = 'http://localhost:5678' }; if (-not $env:N8N_API_KEY) { Write-Error 'N8N_API_KEY not set'; exit 1 }; if (-not $env:EMAIL_FROM) { Write-Error 'EMAIL_FROM not set'; exit 1 }; if (-not $env:EMAIL_TO) { Write-Error 'EMAIL_TO not set'; exit 1 }; New-Item -ItemType Directory '.specify\memory' -ea 0 | Out-Null; $idPath = '.specify\memory\.last_n8n_workflow_id'; if (Test-Path $idPath) { $id = Get-Content $idPath | Select-Object -First 1 }; if (-not $id) { $list = Invoke-RestMethod -Uri ($env:N8N_API_URL + '/rest/workflows') -Headers @{ 'X-N8N-API-KEY'=$env:N8N_API_KEY }; $id = ($list | Where-Object { $_.name -eq 'TW Live Signals → Sheets + Email' } | Select-Object -First 1).id }; if (-not $id) { Write-Error 'workflow id not found'; exit 2 }; $wf = Invoke-RestMethod -Uri ($env:N8N_API_URL + '/rest/workflows/' + $id) -Headers @{ 'X-N8N-API-KEY'=$env:N8N_API_KEY }; foreach ($n in $wf.nodes) { if ($n.type -eq 'n8n-nodes-base.emailSend') { $n.parameters.fromEmail = $env:EMAIL_FROM; $n.parameters.toEmail = $env:EMAIL_TO } }; $body = ($wf | ConvertTo-Json -Depth 50); Invoke-RestMethod -Method Patch -Uri ($env:N8N_API_URL + '/rest/workflows/' + $id) -Headers @{ 'X-N8N-API-KEY'=$env:N8N_API_KEY } -ContentType 'application/json' -Body $body | Out-Null; $id | Out-File -Encoding ascii '.specify\memory\.last_n8n_workflow_id'; Write-Host ('Updated Email node in workflow ' + $id) }"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          echo "n8n_update_email_in_workflow is not supported on POSIX in this spec. Use Windows or update via API manually."
+        '
+      outputs:
+        - .specify/memory/.last_n8n_workflow_id
+
+  n8n_import_workflow:
+    description: ①以 n8n Public API 匯入 workflow.webhook_sheets_email.json（需 N8N_API_KEY / N8N_API_URL）
+    run:
+      windows: "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\n8n_import_workflow.ps1"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          api="${N8N_API_URL:-http://127.0.0.1:5678}"
+          : "${N8N_API_KEY:?N8N_API_KEY not set}"
+          mkdir -p .specify/memory
+          curl -sS -H "X-N8N-API-KEY: $N8N_API_KEY" -H "Content-Type: application/json" \
+            -X POST "$api/api/v1/workflows" -d @n8n/workflow.webhook_sheets_email.json \
+            -o .specify/memory/n8n_import_response.json
+          python -c "import json;import sys;print(json.load(open('.specify/memory/n8n_import_response.json'))['id'])" > .specify/memory/.last_n8n_workflow_id
+          base="${N8N_BASE_URL:-$api}"; printf "%s" "${base%/}/webhook/tw-live-signal" > .specify/memory/n8n_webhook_url.txt
+          echo Imported workflow id=$(cat .specify/memory/.last_n8n_workflow_id)
+        '
+    outputs:
+      - .specify/memory/.last_n8n_workflow_id
+      - .specify/memory/n8n_webhook_url.txt
+
+  
+  n8n_setup_webhook_signal:
+    description: 一鍵完成①匯入→②啟用→③切換 webhook →④設 URL →⑤送測
+    run:
+      windows: "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\n8n_setup_webhook_signal.ps1"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          speckit run n8n_import_workflow
+          speckit run n8n_activate_workflow
+          speckit run switch_notify_to_webhook
+          speckit run set_webhook_env_local
+          speckit run test_n8n_webhook
+        '
+    outputs:
+      - .specify/memory/.last_n8n_workflow_id
+      - .specify/memory/n8n_webhook_url.txt
+      - config/watchlist.yaml
+
+  monitor_smoketest:
+    description: 煙霧測試（非交易時段也可跑；2 分鐘後自動結束）
+    run:
+      windows: |
+        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\monitor_smoketest.ps1
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          python scripts/realtime_monitor.py &
+          pid=$!
+          sleep 120 || true
+          [ -f state/monitor.pid ] && kill -9 "$(cat state/monitor.pid)" 2>/dev/null || true
+          kill -9 "$pid" 2>/dev/null || true
+          echo "Monitor smoketest finished (stopped after 120s)"
+        '
+    outputs: []
+
+  n8n_setup_email_pipeline:
+    description: 一鍵更新 Email From/To →設定刷新 Webhook URL →送出測試 POST
+    run:
+      windows: |
+        cmd /V:ON /C ^
+        python speckit.py run n8n_update_email_in_workflow && ^
+        python speckit.py run set_webhook_env_local && ^
+        python speckit.py run test_n8n_webhook
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          speckit run n8n_update_email_in_workflow
+          speckit run set_webhook_env_local
+          speckit run test_n8n_webhook
+        '
+    outputs:
+      - .specify/memory/.last_n8n_workflow_id
+      - .specify/memory/n8n_webhook_url.txt
+
+  n8n_update_workflow_params:
+    description: 以 n8n API 更新剛匯入 workflow 的 Google Sheets sheetId 與 Email 的 from/to（需 N8N_API_KEY、.last_n8n_workflow_id）
+    run:
+      windows: |
+        powershell -NoProfile -Command "& { $ErrorActionPreference='Stop'; if (-not $env:N8N_API_KEY) { $env:N8N_API_KEY=[Environment]::GetEnvironmentVariable('N8N_API_KEY','User') }; if (-not $env:N8N_API_KEY) { if ($env:N8N_API_KEY_FILE -and (Test-Path $env:N8N_API_KEY_FILE)) { $env:N8N_API_KEY=(Get-Content -Raw $env:N8N_API_KEY_FILE).Trim() } elseif (Test-Path 'n8n_api_key.txt') { $env:N8N_API_KEY=(Get-Content -Raw 'n8n_api_key.txt').Trim() } }; if (-not $env:N8N_API_URL) { $env:N8N_API_URL=[Environment]::GetEnvironmentVariable('N8N_API_URL','User') }; if (-not $env:SHEET_ID) { $env:SHEET_ID=[Environment]::GetEnvironmentVariable('SHEET_ID','User') }; if (-not $env:EMAIL_FROM) { $env:EMAIL_FROM=[Environment]::GetEnvironmentVariable('EMAIL_FROM','User') }; if (-not $env:EMAIL_TO) { $env:EMAIL_TO=[Environment]::GetEnvironmentVariable('EMAIL_TO','User') }; if (-not $env:N8N_API_KEY) { Write-Error 'N8N_API_KEY not set'; exit 1 }; $api=$env:N8N_API_URL; if (-not $api) { $api='http://localhost:5678' }; $id=Get-Content '.specify\memory\.last_n8n_workflow_id' -ErrorAction Stop; $wf=Invoke-RestMethod -Method Get -Uri ($api + '/rest/workflows/' + $id) -Headers @{ 'X-N8N-API-KEY'=$env:N8N_API_KEY }; $sheetId=$env:SHEET_ID; if (-not $sheetId) { Write-Error 'SHEET_ID not set'; exit 1 }; $emailFrom=$env:EMAIL_FROM; if (-not $emailFrom) { Write-Error 'EMAIL_FROM not set'; exit 1 }; $emailTo=$env:EMAIL_TO; if (-not $emailTo) { Write-Error 'EMAIL_TO not set'; exit 1 }; foreach ($n in $wf.nodes) { if ($n.name -eq 'Google Sheets: Append') { $n.parameters.sheetId=$sheetId }; if ($n.name -eq 'Email') { $n.parameters.fromEmail=$emailFrom; $n.parameters.toEmail=$emailTo } }; $body=($wf | ConvertTo-Json -Depth 20); Invoke-RestMethod -Method Patch -Uri ($api + '/rest/workflows/' + $id) -Headers @{ 'X-N8N-API-KEY'=$env:N8N_API_KEY } -ContentType 'application/json' -Body $body | Out-Null; Write-Host ('Updated workflow ' + $id + ' parameters.') }"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          : "${N8N_API_KEY:?N8N_API_KEY not set}"
+          api="${N8N_API_URL:-http://localhost:5678}"
+          id="$(cat .specify/memory/.last_n8n_workflow_id)"
+          : "${SHEET_ID:?SHEET_ID not set}"
+          : "${EMAIL_FROM:?EMAIL_FROM not set}"
+          : "${EMAIL_TO:?EMAIL_TO not set}"
+          wf="$(curl -sS -H "X-N8N-API-KEY: $N8N_API_KEY" "$api/rest/workflows/$id")"
+          patched="$(python -c "import json,os,sys; wf=json.loads(sys.stdin.read()); [n.setdefault('parameters',{}).update({'sheetId':os.environ['SHEET_ID']}) for n in wf.get('nodes',[]) if n.get('name')=='Google Sheets: Append']; [n.setdefault('parameters',{}).update({'fromEmail':os.environ['EMAIL_FROM'],'toEmail':os.environ['EMAIL_TO']}) for n in wf.get('nodes',[]) if n.get('name')=='Email']; print(json.dumps(wf))" <<< "$wf")"
+          curl -sS -H "X-N8N-API-KEY: $N8N_API_KEY" -H "Content-Type: application/json" -X PATCH "$api/rest/workflows/$id" -d "$patched" >/dev/null
+          echo "Updated workflow $id parameters."
+        '
+    outputs: []
+
+  n8n_check_endpoints:
+    description: 檢查 n8n UI/API/Webhook 端點可用性並產出報告（.specify/memory/n8n_check.txt）
+    run:
+      windows: |
+        powershell -NoProfile -Command "& { $ErrorActionPreference='Stop'; $base=$env:N8N_BASE_URL; if (-not $base) { $base=$env:N8N_API_URL }; if (-not $base) { $base='http://localhost:5678' }; $ui=$base.TrimEnd('/') + '/home/workflows'; $api=$base.TrimEnd('/') + '/rest/workflows'; $wh=$base.TrimEnd('/') + '/webhook/tw-live-signal'; New-Item -ItemType Directory '.specify\memory' -ea 0 | Out-Null; $report='.specify\memory\n8n_check.txt'; '' | Out-File -Encoding utf8 $report; function W($t){ Add-Content -Encoding utf8 $report $t; Write-Host $t }; W('BASE_URL='+$base); try { $r=Invoke-WebRequest -Uri $ui -Method Get -UseBasicParsing -TimeoutSec 5; W('UI: ' + $r.StatusCode) } catch { W('UI: ERROR ' + $_.Exception.Message) }; if (-not $env:N8N_API_KEY) { if ($env:N8N_API_KEY_FILE -and (Test-Path $env:N8N_API_KEY_FILE)) { $env:N8N_API_KEY=(Get-Content -Raw $env:N8N_API_KEY_FILE).Trim('"','<','>') } elseif (Test-Path 'n8n_api_key.txt') { $env:N8N_API_KEY=(Get-Content -Raw 'n8n_api_key.txt').Trim('"','<','>') } } if ($env:N8N_API_KEY) { try { $r=Invoke-WebRequest -Uri $api -Headers @{ 'X-N8N-API-KEY'=$env:N8N_API_KEY } -Method Get -UseBasicParsing -TimeoutSec 5; W('API: ' + $r.StatusCode) } catch { W('API: ERROR ' + $_.Exception.Message) } } else { W('API: SKIP (N8N_API_KEY not set)') }; $payload = @{ time=(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); ping='ok' } | ConvertTo-Json; try { $r=Invoke-WebRequest -Uri $wh -Method Post -ContentType 'application/json' -Body $payload -UseBasicParsing -TimeoutSec 5; W('WEBHOOK: ' + $r.StatusCode + ' -> ' + $wh) } catch { W('WEBHOOK: ERROR ' + $_.Exception.Message + ' -> ' + $wh) } }"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          base="${N8N_BASE_URL:-${N8N_API_URL:-http://localhost:5678}}"
+          ui="${base%/}/home/workflows"
+          api="${base%/}/rest/workflows"
+          wh="${base%/}/webhook/tw-live-signal"
+          mkdir -p .specify/memory
+          report=.specify/memory/n8n_check.txt
+          : > "$report"
+          echo "BASE_URL=$base" | tee -a "$report"
+          code=$(curl -s -o /dev/null -w "%{http_code}" "$ui" || true); echo "UI: $code" | tee -a "$report"
+          if [ -n "${N8N_API_KEY:-}" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" -H "X-N8N-API-KEY: $N8N_API_KEY" "$api" || true); echo "API: $code" | tee -a "$report"
+          else
+            echo "API: SKIP (N8N_API_KEY not set)" | tee -a "$report"
+          fi
+          payload=$(python -c "import json,datetime; print(json.dumps({'time':datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'ping':'ok'}))")
+          code=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -d "$payload" "$wh" || true); echo "WEBHOOK: $code -> $wh" | tee -a "$report"
+        '
+    outputs:
+      - .specify/memory/n8n_check.txt
+
+  n8n_run_via_api:
+    description: 以 n8n Public API 直接執行工作流（從 Prepare Row 節點注入測試資料）
+    run:
+      windows: |
+        powershell -NoProfile -Command "& { $ErrorActionPreference='Stop'; if (-not $env:N8N_API_KEY) { $env:N8N_API_KEY=[Environment]::GetEnvironmentVariable('N8N_API_KEY','User') }; if (-not $env:N8N_API_KEY) { if ($env:N8N_API_KEY_FILE -and (Test-Path $env:N8N_API_KEY_FILE)) { $env:N8N_API_KEY=(Get-Content -Raw $env:N8N_API_KEY_FILE).Trim('"','<','>') } elseif (Test-Path 'n8n_api_key.txt') { $env:N8N_API_KEY=(Get-Content -Raw 'n8n_api_key.txt').Trim('"','<','>') } }; if (-not $env:N8N_API_URL) { $env:N8N_API_URL=[Environment]::GetEnvironmentVariable('N8N_API_URL','User') }; if (-not $env:N8N_API_KEY) { Write-Error 'N8N_API_KEY not set'; exit 1 }; $api=$env:N8N_API_URL; if (-not $api) { $api='http://localhost:5678' }; $id = Get-Content '.specify\memory\.last_n8n_workflow_id' -ErrorAction Stop; $headers = @{ 'X-N8N-API-KEY' = $env:N8N_API_KEY }; $body = @{ workflowId = $id; startNodes = @('"Prepare Row"'); runData = @{ 'Prepare Row' = @(@{ json = @{ time = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); symbol='2330'; action='BUY'; price=1450; reason='api smoke' } }) } } | ConvertTo-Json -Depth 10; $res = Invoke-RestMethod -Method Post -Uri ($api + '/rest/workflows/run') -Headers $headers -ContentType 'application/json' -Body $body; $status = if ($res) { 'OK' } else { 'UNKNOWN' }; Write-Host ('Triggered workflow via API (' + $status + ')') }"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          : "${N8N_API_KEY:?N8N_API_KEY not set}"
+          api="${N8N_API_URL:-http://localhost:5678}"
+          ID="$(cat .specify/memory/.last_n8n_workflow_id)"
+          payload=$(ID="$ID" python -c "import os,json,datetime; print(json.dumps({\"workflowId\": os.environ['ID'], \"startNodes\":[\"Prepare Row\"], \"runData\": {\"Prepare Row\": [{\"json\": {\"time\": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), \"symbol\": \"2330\", \"action\": \"BUY\", \"price\": 1450, \"reason\": \"api smoke\"}}]}}))")
+          curl -sS -H "X-N8N-API-KEY: $N8N_API_KEY" -H "Content-Type: application/json" -X POST "$api/rest/workflows/run" -d "$payload" | sed -e 's/.*/Triggered workflow via API (response received)/'
+        '
+    outputs: []

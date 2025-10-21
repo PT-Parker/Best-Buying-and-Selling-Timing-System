@@ -1,0 +1,22 @@
+﻿# config/rules.yaml
+symbols: ["2330.TW","0050.TW"]
+backtest_period: ["2023-01-01","2025-09-30"]
+fees: { commission: 0.001425, slippage: 0.0005 }
+indicators:
+  rsi: { period: 14, buy_lt: 30, sell_gt: 70 }
+  bollinger: { period: 20, std: 2.0 }
+  ema: { fast: 5, slow: 20 }
+  macd: { fast: 12, slow: 26, signal: 9 }
+rules:
+  buy:
+    all: ["rsi < 30","close crosses up bb.lower"]
+    trend_bonus: "ema.fast > ema.slow -> +1 confidence"
+  sell:
+    all: ["rsi > 70","close crosses down bb.upper"]
+    trend_bonus: "ema.fast < ema.slow -> +1 confidence"
+risk:
+  stop_loss: "min(entry*0.97, bb.lower*0.995)"
+  cool_down_days: 2
+notification:
+  channel: "email"
+  template_title: "[{{symbol}}] {{signal}}（{{confidence}}）"

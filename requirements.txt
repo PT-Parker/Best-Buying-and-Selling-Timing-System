@@ -1,0 +1,9 @@
+numpy>=1.24
+pandas>=1.5
+matplotlib
+yfinance
+PyYAML>=6.0
+python-pptx
+twstock==1.4.0
+python-dateutil>=2.8.2
+requests>=2.31.0

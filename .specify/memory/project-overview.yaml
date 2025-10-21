@@ -1,0 +1,862 @@
+version: 1.0
+language: zh-TW
+timezone: Asia/Taipei
+owner: Parker Ho
+status: draft
+
+objectives:
+  - "建立「多技術指標共識 + Agentic AI 解釋」之台股買賣時機判斷系統"
+  - "交付 20 頁簡報／PDR 與 10 分鐘 AI 影片（含 Demo）"
+
+success_metrics:
+  - "回測對 2330／0050 年化報酬 ≥ Buy&Hold，且最大回撤（MDD）下降 ≥ 10%"
+  - "訊號方向 Precision／Recall 高於單指標（RSI-only）基線"
+  - "每日自動流程（兩檔）須於 ≤ 2 分鐘內完成"
+
+assignment_alignment:
+  introduction:
+    attention_motivation: "AI/自動化進步；散戶最大難題是『何時買賣』"
+    but_challenges:
+      - "單一指標延遲、假訊號；難以 24/7 監控"
+      - "資料串接、回測與通知零散"
+    cure: "多指標共識 + n8n 自動化 + Agentic AI 中文解釋信心"
+    development_basis: "以 RSI/布林為核心，EMA/MACD 輔助，含趨勢濾網與風控"
+  experiments: "台股日線回測（對照：RSI-only、EMA 金叉、Buy&Hold）"
+  findings_expected:
+    - "假訊號下降、穩定性上升、風險報酬比改善"
+    - "可產生可讀中文解釋；展示成功失誤案例與停損"
+
+scope:
+  include:
+    - 日線
+    - 2-3 檔示範
+    - 紙上交易
+    - Email/LINE/Discord 推播
+    - Google Sheet/CSV 紀錄
+  exclude:
+    - 實際下單
+    - 分鐘線高頻
+    - 期權槓桿
+    - 付費資料源
+
+stocks:
+  tickers:
+    - "2330.TW"
+    - "0050.TW"
+  backtest_period:
+    - "2023-01-01"
+    - "2025-09-30"
+
+currency: TWD
+
+data_sources:
+  primary: "Yahoo Finance（日線 OHLCV）"
+  fallback:
+    - "Alpha Vantage"
+    - "Twelve Data"
+  notes:
+    - "API 金鑰存於 n8n Credentials；需設定重試與備援資料來源"
+
+indicators:
+  rsi:
+    period: 14
+    buy_lt: 30
+    sell_gt: 70
+  bollinger:
+    period: 20
+    std: 2.0
+  ema:
+    fast: 5
+    slow: 20
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+
+signal_rules:
+  buy:
+    all:
+      - "RSI < 30"
+      - "收盤由下而上穿越布林下軌"
+    trend_bonus: "EMA(fast) > EMA(slow) => 信心 +1"
+  sell:
+    all:
+      - "RSI > 70"
+      - "收盤由上而下跌破布林上軌"
+    trend_bonus: "EMA(fast) < EMA(slow) => 信心 +1"
+  risk_controls:
+    stop_loss: "min(入場價 * 0.97, 布林下軌 * 0.995)"
+    cool_down_days: 2
+    duplicate_signals: "連續日僅保留首次訊號"
+
+agentic_ai:
+  provider: openai
+  model: gpt-5-thinking
+  role: "產出中文重點解釋 + 風險提醒 + 信心等級（Strong/Normal/Weak）"
+  prompt_outline:
+    - "輸入：最近 30 根 K、最新指標值、規則判定結果"
+    - "輸出：不超過 3 行中文解釋；列出觸發條件；標示風險點（量縮、長影線、趨勢相悖）"
+
+workflow_n8n:
+  schedule: "每交易日 17:10 Asia/Taipei"
+  steps:
+    - fetch_prices:
+        lookback: 60
+        source: "Yahoo（預設）"
+    - compute_indicators:
+        - RSI
+        - Bollinger
+        - EMA
+        - MACD
+    - decide_signal: "依 signal_rules 產生 BUY/SELL/HOLD + confidence"
+    - llm_explain: "agentic_ai 生成中文理由與風險提示"
+    - persist_log: "寫入 Google Sheet: signals_log 或 CSV"
+    - notify: "Email/LINE/Discord 任一渠道"
+    - optional_backtest_nightly: true
+  failure_policy:
+    - "API 失敗 → 重試 3 次 → fallback source → 若仍失敗則記錄並跳過"
+
+backtest:
+  engine: "Python（pandas/ta 或自製模組）"
+  capital: 1000000
+  position_mode: "單檔滿倉；反向訊號換手；簡化 Demo"
+  fees:
+    commission: 0.001425
+    slippage: 0.0005
+  baselines:
+    - "RSI-only"
+    - "EMA(5/20) 金叉"
+    - "Buy&Hold"
+  metrics:
+    - "annual_return"
+    - "win_rate"
+    - "max_drawdown"
+    - "sharpe"
+    - "precision"
+    - "recall"
+    - "trade_count"
+  outputs:
+    - "equity_curve.png"
+    - "drawdown.png"
+    - "trades.csv"
+    - "report.html"
+
+notification_template:
+  title: "[{{symbol}}] {{signal}}（{{confidence}}）"
+  body: |
+    日期：{{date}}（台北時間）
+    收盤：{{close}} TWD
+    RSI(14)：{{rsi}}
+    布林(20,2)：{{bb.lower}} ~ {{bb.upper}}
+    EMA(5/20)：{{ema.fast}} / {{ema.slow}}
+    理由：{{llm_reason}}
+    風險：{{risk_note}}
+    ＊僅供研究示範，不構成投資建議
+
+logging:
+  storage: "Google Sheet: signals_log 或 /logs/signals.csv"
+  fields:
+    - "date"
+    - "symbol"
+    - "close"
+    - "rsi"
+    - "bb.lower"
+    - "bb.upper"
+    - "ema5"
+    - "ema20"
+    - "macd"
+    - "signal"
+    - "confidence"
+    - "llm_reason"
+
+security_compliance:
+  - "金鑰存於 n8n Credentials；禁止提交至 Git"
+  - "所有輸出需附註「僅供研究示範」"
+
+acceptance_criteria:
+  functional:
+    - "[ ] 一鍵啟動 n8n，完成當日流程並寫入紀錄"
+    - "[ ] 成功發送至少一則通知（Email/LINE/Discord）"
+    - "[ ] LLM 生成中文解釋（≤ 3 行）與信心等級"
+  quality:
+    - "[ ] 缺值或 API 失敗可優雅跳過並記錄"
+    - "[ ] 同檔連續訊號僅首次有效"
+    - "[ ] 全中文介面與輸出，單位與時區正確"
+  results:
+    - "[ ] 回測輸出 3 張圖 + 1 份 HTML 報告"
+    - "[ ] 指標優於基線（列於報告封面表格）"
+
+slides_outline_20:
+  - "1 題目與價值主張"
+  - "2-3 動機痛點（Attention/But）"
+  - "4 解法（Cure）"
+  - "5 方法設計基礎（Development）"
+  - "6 相關研究（Related Work）"
+  - "7 系統架構圖（Proposed Design）"
+  - "8 指標選型理由（RSI/BB/EMA/MACD）"
+  - "9 規則與風控"
+  - "10 n8n 流程圖"
+  - "11 資料來源與品質控管"
+  - "12 回測設計"
+  - "13 評估指標"
+  - "14 資產曲線"
+  - "15 回撤與勝率、混淆矩陣"
+  - "16 成功案例"
+  - "17 失誤案例與停損"
+  - "18 Demo 操作指南"
+  - "19 風險、限制與未來工作"
+  - "20 結論與 Q&A（備用頁）"
+
+video_script_10min:
+  segments:
+    - "0:00-0:30 痛點引子"
+    - "0:30-1:30 解法總覽"
+    - "1:30-2:30 架構動畫"
+    - "2:30-4:00 指標教學（為何要共識）"
+    - "4:00-6:00 n8n Demo（當日訊號 + 中文解釋）"
+    - "6:00-7:30 回測結果"
+    - "7:30-8:30 成功與失誤案例"
+    - "8:30-9:30 擴充藍圖"
+    - "9:30-10:00 收束重點"
+
+milestones:
+  - name: "M1_資料與指標"
+    days: 3
+    done_when: "成功抓取 2330/0050，計算 RSI/BB/EMA/MACD 並輸出 latest.json"
+  - name: "M2_規則與回測"
+    days: 2
+    done_when: "生成 equity_curve/drawdown 圖與 report.html"
+  - name: "M3_n8n 自動化與通知"
+    days: 2
+    done_when: "收到第一則中文訊號通知，Sheet 有紀錄"
+  - name: "M4_簡報與影片"
+    days: 2
+    done_when: "完成 20 頁幻燈片、旁白稿與 Demo 錄影"
+
+repo_layout:
+  - "/n8n/workflow.json"
+  - "/config/rules.yaml"
+  - "/backtest/run_backtest.py"
+  - "/data/{symbol}.csv"
+  - "/logs/signals.csv"
+  - "/docs/{demo_readme.md,slides_outline.md,video_script.md}"
+  - "/scripts/scaffold.ps1"
+
+tasks:
+  scaffold:
+    description: "生成策略規則、n8n 工作流與回測腳本"
+    run:
+      windows: "powershell -ExecutionPolicy Bypass -File scripts\\scaffold.ps1"
+      posix: "pwsh -File scripts/scaffold.ps1"
+    outputs:
+      - config/rules.yaml
+      - n8n/workflow.json
+      - backtest/run_backtest.py
+    success_criteria:
+      - "三個檔案存在且非空"
+      - "backtest/run_backtest.py 可執行並輸出圖與 trades.csv"
+  backtest_2330:
+    description: "執行 2330 回測並產生資產曲線與交易清單"
+    run:
+      windows: "python backtest\\run_backtest.py --symbol 2330.TW --start 2023-01-01 --end 2025-09-30"
+      posix: "python backtest/run_backtest.py --symbol 2330.TW --start 2023-01-01 --end 2025-09-30"
+    outputs:
+      - "backtest_out/2330.TW_equity.png"
+      - "backtest_out/2330.TW_trades.csv"
+  demo_daily:
+    description: "在 n8n 匯入 workflow.json 後，手動或排程觸發當日流程"
+    run:
+      windows: "echo 匯入 n8n/workflow.json 並啟用 Workflow（介面操作）"
+      posix: "echo Import n8n/workflow.json via UI and activate"
+    outputs:
+      - "logs/signals.csv"
+      - "通知訊息（Email/LINE/Discord 任一）"
+  monitor_live:
+    description: 啟動盤中即時監控（>10 檔台股、EMA/RSI、LINE/Discord/n8n 推播、跨日續看）
+    run:
+      windows: |
+        cmd /V:ON /C ^
+        echo [speckit] installing deps && ^
+        pip install -r requirements.txt && ^
+        set "PYTHONIOENCODING=utf-8" && ^
+        python scripts\realtime_monitor.py
+      posix: |
+        bash -lc '
+          set -e
+          pip install -r requirements.txt
+          PYTHONIOENCODING=utf-8 python scripts/realtime_monitor.py
+        '
+    docs:
+      - "環境變數（擇一）：LINE_NOTIFY_TOKEN / DISCORD_WEBHOOK_URL / N8N_WEBHOOK_URL"
+      - "監控名單請改 config/watchlist.yaml 的 symbols。"
+      - "輸出：logs/alerts.csv、metrics/live_trades.csv、metrics/equity_timeseries.csv、state/positions.json"
+  stop_monitor:
+    description: 停止盤中監控（以 PID 殺掉正在執行的 monitor）
+  scaffold_inline:
+    description: "生成 rules.yaml、n8n/workflow.json、backtest/run_backtest.py（純內嵌，無需外部腳本）"
+    run:
+      windows: |
+        powershell -NoProfile -NonInteractive -Command "& {
+          $ErrorActionPreference='Stop';
+          $dirs=@('config','n8n','backtest','data','logs'); foreach($d in $dirs){ if(-not(Test-Path $d)){ New-Item -ItemType Directory -Path $d | Out-Null } }
+
+          $rules = @'
+# config/rules.yaml
+symbols: ["2330.TW","0050.TW"]
+backtest_period: ["2023-01-01","2025-09-30"]
+fees: { commission: 0.001425, slippage: 0.0005 }
+indicators:
+  rsi: { period: 14, buy_lt: 30, sell_gt: 70 }
+  bollinger: { period: 20, std: 2.0 }
+  ema: { fast: 5, slow: 20 }
+  macd: { fast: 12, slow: 26, signal: 9 }
+rules:
+  buy:
+    all: ["rsi < 30","close crosses up bb.lower"]
+    trend_bonus: "ema.fast > ema.slow -> +1 confidence"
+  sell:
+    all: ["rsi > 70","close crosses down bb.upper"]
+    trend_bonus: "ema.fast < ema.slow -> +1 confidence"
+risk:
+  stop_loss: "min(entry*0.97, bb.lower*0.995)"
+  cool_down_days: 2
+notification:
+  channel: "email"
+  template_title: "[{{symbol}}] {{signal}}（{{confidence}}）"
+'@; Set-Content -Path 'config/rules.yaml' -Encoding UTF8;
+
+          $wf = @'
+{
+  "name": "TW Stock Signals (RSI+BB+EMA) — Starter",
+  "nodes": [
+    {
+      "parameters": { "triggerTimes": [{"item":"everyDay","hour":17,"minute":10}], "timezone":"Asia/Taipei" },
+      "id": "Cron", "name": "Cron (17:10 TST)", "type": "n8n-nodes-base.cron", "typeVersion": 1, "position": [-560,200]
+    },
+    {
+      "parameters": { "functionCode": "const symbols=['2330.TW','0050.TW']; const now=new Date(); const end=Math.floor(now.getTime()/1000); const start=Math.floor(new Date(now.getTime()-90*24*3600*1000).getTime()/1000); return symbols.map(s=>({json:{symbol:s,period1:start,period2:end}}));" },
+      "id": "Init", "name": "Init Symbols", "type": "n8n-nodes-base.function", "typeVersion": 2, "position": [-360,200]
+    },
+    {
+      "parameters": { "url": "https://query1.finance.yahoo.com/v7/finance/download={{$json.symbol}}?period1={{$json.period1}}&period2={{$json.period2}}&interval=1d&events=history&includeAdjustedClose=true", "responseFormat": "string", "options": {"timeout": 30000} },
+      "id": "Fetch", "name": "Fetch Yahoo CSV", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [-120,200]
+    },
+    {
+      "parameters": { "functionCode": "const s=items[0].json; const text=s.data; const lines=(text||'').split(/\r?\n/).filter(Boolean); const head=lines.shift(); if(!head) return [{json:{note:'no data'}}]; const cols=head.split(','); const iDate=cols.indexOf('Date'); const iClose=cols.indexOf('Close'); const rows=lines.map(r=>r.split(',')); const closes=rows.map(r=>({date:r[iDate], close:parseFloat(r[iClose])})).filter(x=>!isNaN(x.close)); return [{json:{closes:closes.slice(-60)}}];" },
+      "id": "Parse", "name": "Parse CSV (closes)", "type": "n8n-nodes-base.function", "typeVersion": 2, "position": [120,200]
+    },
+    {
+      "parameters": { "functionCode": "const z=$json; const last=z.closes?.at(-1); const signal='HOLD'; const confidence='Weak'; const reason='Starter workflow; 指標由後端計算'; return [{json:{date:last?.date, close:last?.close, signal, confidence, reason}}];" },
+      "id": "Decide", "name": "Decide (placeholder)", "type": "n8n-nodes-base.function", "typeVersion": 2, "position": [360,200]
+    }
+  ],
+  "connections": {
+    "Cron (17:10 TST)": {"main":[[{"node":"Init Symbols","type":"main","index":0}]]},
+    "Init Symbols": {"main":[[{"node":"Fetch Yahoo CSV","type":"main","index":0}]]},
+    "Fetch Yahoo CSV": {"main":[[{"node":"Parse CSV (closes)","type":"main","index":0}]]},
+    "Parse CSV (closes)": {"main":[[{"node":"Decide (placeholder)","type":"main","index":0}]]}
+  },
+  "active": false, "settings": {}, "staticData": {}
+}
+'@; Set-Content -Path 'n8n/workflow.json' -Encoding UTF8;
+
+          $bt = @'
+# backtest/run_backtest.py
+# 需求：pip install pandas numpy matplotlib yfinance
+import os, math, argparse
+import numpy as np, pandas as pd, yfinance as yf
+import matplotlib.pyplot as plt
+
+def ema(series, span): return series.ewm(span=span, adjust=False).mean()
+
+def rsi(series, period=14):
+    delta = series.diff()
+    up = delta.clip(lower=0); down = -delta.clip(upper=0)
+    roll_up = up.ewm(alpha=1/period, adjust=False).mean()
+    roll_down = down.ewm(alpha=1/period, adjust=False).mean()
+    rs = roll_up / (roll_down + 1e-12)
+    return 100 - (100 / (1 + rs))
+
+def bollinger(series, period=20, std=2.0):
+    ma = series.rolling(period).mean()
+    sigma = series.rolling(period).std()
+    upper = ma + std*sigma
+    lower = ma - std*sigma
+    return ma, upper, lower
+
+def generate_signals(df, conf_bonus=True):
+    df = df.copy()
+    df['EMA_FAST'] = ema(df['Close'], 5)
+    df['EMA_SLOW'] = ema(df['Close'], 20)
+    df['RSI'] = rsi(df['Close'], 14)
+    mid, up, lo = bollinger(df['Close'], 20, 2.0)
+    df['BB_MID'], df['BB_UP'], df['BB_LO'] = mid, up, lo
+    df['cross_up_lo'] = (df['Close'].shift(1) < df['BB_LO'].shift(1)) & (df['Close'] >= df['BB_LO'])
+    df['cross_dn_up'] = (df['Close'].shift(1) > df['BB_UP'].shift(1)) & (df['Close'] <= df['BB_UP'])
+    cond_buy  = (df['RSI'] < 30) & df['cross_up_lo']
+    cond_sell = (df['RSI'] > 70) & df['cross_dn_up']
+    df['signal'] = 'HOLD'
+    df.loc[cond_buy,  'signal'] = 'BUY'
+    df.loc[cond_sell, 'signal'] = 'SELL'
+    conf = ['Weak']*len(df)
+    if conf_bonus:
+        bonus_buy  = (df['EMA_FAST'] > df['EMA_SLOW']) & cond_buy
+        bonus_sell = (df['EMA_FAST'] < df['EMA_SLOW']) & cond_sell
+        for i in df.index:
+            if cond_buy.loc[i]:  conf[df.index.get_loc(i)]  = 'Normal'
+            if cond_sell.loc[i]: conf[df.index.get_loc(i)]  = 'Normal'
+        for i in df.index:
+            if df.at[i,'signal']=='BUY'  and bonus_buy.loc[i]:  conf[df.index.get_loc(i)]='Strong'
+            if df.at[i,'signal']=='SELL' and bonus_sell.loc[i]: conf[df.index.get_loc(i)]='Strong'
+    df['confidence'] = conf
+    return df
+
+def backtest(df, commission=0.001425, slippage=0.0005, initial=1_000_000):
+    df = df.copy()
+    df['position'] = 0
+    pos = 0; cash = initial; shares = 0
+    equity = []
+    for i in range(len(df)):
+        sig = df.iloc[i]['signal']; px = df.iloc[i]['Close']
+        if pos == 0 and sig == 'BUY':
+            buy_px = px*(1+slippage)
+            shares = math.floor((cash*(1-commission))/buy_px)
+            cost = shares*buy_px; fee = cost*commission
+            cash -= (cost + fee); pos = 1
+        elif pos == 1 and sig == 'SELL':
+            sell_px = px*(1-slippage)
+            proceeds = shares*sell_px; fee = proceeds*commission
+            cash += (proceeds - fee); pos = 0; shares = 0
+        equity.append(cash + (shares*px if shares>0 else 0))
+    df['equity'] = equity
+    roll_max = df['equity'].cummax()
+    drawdown = df['equity']/roll_max - 1
+    metrics = {
+        'annual_return': (df['equity'].iloc[-1]/df['equity'].iloc[0])**(252/len(df)) - 1,
+        'max_drawdown' : float(drawdown.min())
+    }
+    trades = df[df['signal'].isin(['BUY','SELL'])][['signal','Close']]
+    return df, metrics, trades
+
+def plot_equity(df, out_png):
+    plt.figure(figsize=(10,4))
+    plt.plot(df.index, df['equity'])
+    plt.title('Equity Curve'); plt.xlabel('Date'); plt.ylabel('TWD')
+    plt.tight_layout(); plt.savefig(out_png, dpi=160)
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--symbol', default='2330.TW')
+    parser.add_argument('--start', default='2023-01-01')
+    parser.add_argument('--end',   default='2025-09-30')
+    parser.add_argument('--commission', type=float, default=0.001425)
+    parser.add_argument('--slippage',   type=float, default=0.0005)
+    args = parser.parse_args()
+    df = yf.download(args.symbol, start=args.start, end=args.end, auto_adjust=True)
+    df = df.rename_axis('Date').reset_index().set_index('Date')
+    df = generate_signals(df)
+    bt_df, metrics, trades = backtest(df, commission=args.commission, slippage=args.slippage)
+    os.makedirs('backtest_out', exist_ok=True)
+    plot_equity(bt_df, f'backtest_out/{args.symbol}_equity.png')
+    trades.to_csv(f'backtest_out/{args.symbol}_trades.csv', index=True, encoding='utf-8-sig')
+    print(f"Annual Return: {metrics['annual_return']:.2%}")
+    print(f"Max Drawdown : {metrics['max_drawdown']:.2%}")
+    print(f"Signals saved to backtest_out/{args.symbol}_trades.csv")
+    print(f"Chart   saved to backtest_out/{args.symbol}_equity.png")
+
+if __name__ == '__main__':
+    main()
+'@; Set-Content -Path 'backtest/run_backtest.py' -Encoding UTF8;
+
+          Write-Host '✅ Scaffold done (inline).'
+        }"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          mkdir -p config n8n backtest data logs
+
+          cat > config/rules.yaml << "YAML"
+symbols: ["2330.TW","0050.TW"]
+backtest_period: ["2023-01-01","2025-09-30"]
+fees: { commission: 0.001425, slippage: 0.0005 }
+indicators:
+  rsi: { period: 14, buy_lt: 30, sell_gt: 70 }
+  bollinger: { period: 20, std: 2.0 }
+  ema: { fast: 5, slow: 20 }
+  macd: { fast: 12, slow: 26, signal: 9 }
+rules:
+  buy:
+    all: ["rsi < 30","close crosses up bb.lower"]
+    trend_bonus: "ema.fast > ema.slow -> +1 confidence"
+  sell:
+    all: ["rsi > 70","close crosses down bb.upper"]
+    trend_bonus: "ema.fast < ema.slow -> +1 confidence"
+risk:
+  stop_loss: "min(entry*0.97, bb.lower*0.995)"
+  cool_down_days: 2
+notification:
+  channel: "email"
+  template_title: "[{{symbol}}] {{signal}}（{{confidence}}）"
+YAML
+
+          cat > n8n/workflow.json << "JSON"
+{
+  "name": "TW Stock Signals (RSI+BB+EMA) — Starter",
+  "nodes": [
+    { "parameters": { "triggerTimes":[{"item":"everyDay","hour":17,"minute":10}], "timezone":"Asia/Taipei" },
+      "id":"Cron","name":"Cron (17:10 TST)","type":"n8n-nodes-base.cron","typeVersion":1,"position":[-560,200]},
+    { "parameters": { "functionCode":"const symbols=['2330.TW','0050.TW']; const now=new Date(); const end=Math.floor(now.getTime()/1000); const start=Math.floor(new Date(now.getTime()-90*24*3600*1000).getTime()/1000); return symbols.map(s=>({json:{symbol:s,period1:start,period2:end}}));"},
+      "id":"Init","name":"Init Symbols","type":"n8n-nodes-base.function","typeVersion":2,"position":[-360,200]},
+    { "parameters": { "url":"https://query1.finance.yahoo.com/v7/finance/download={{$json.symbol}}?period1={{$json.period1}}&period2={{$json.period2}}&interval=1d&events=history&includeAdjustedClose=true", "responseFormat":"string","options":{"timeout":30000}},
+      "id":"Fetch","name":"Fetch Yahoo CSV","type":"n8n-nodes-base.httpRequest","typeVersion":4,"position":[-120,200]},
+    { "parameters": { "functionCode":"const s=items[0].json; const text=s.data; const lines=(text||'').split(/\\r?\\n/).filter(Boolean); const head=lines.shift(); if(!head) return [{json:{note:'no data'}}]; const cols=head.split(','); const iDate=cols.indexOf('Date'); const iClose=cols.indexOf('Close'); const rows=lines.map(r=>r.split(',')); const closes=rows.map(r=>({date:r[iDate], close:parseFloat(r[iClose])})).filter(x=>!isNaN(x.close)); return [{json:{closes:closes.slice(-60)}}];"},
+      "id":"Parse","name":"Parse CSV (closes)","typeVersion":2,"type":"n8n-nodes-base.function","position":[120,200]},
+    { "parameters": { "functionCode":"const z=$json; const last=z.closes?.at(-1); const signal='HOLD'; const confidence='Weak'; const reason='Starter workflow; 指標由後端計算'; return [{json:{date:last?.date, close:last?.close, signal, confidence, reason}}];"},
+      "id":"Decide","name":"Decide (placeholder)","type":"n8n-nodes-base.function","typeVersion":2,"position":[360,200]}
+  ],
+  "connections": {
+    "Cron (17:10 TST)":{"main":[[{"node":"Init Symbols","type":"main","index":0}]]},
+    "Init Symbols":{"main":[[{"node":"Fetch Yahoo CSV","type":"main","index":0}]]},
+    "Fetch Yahoo CSV":{"main":[[{"node":"Parse CSV (closes)","type":"main","index":0}]]},
+    "Parse CSV (closes)":{"main":[[{"node":"Decide (placeholder)","type":"main","index":0}]]}
+  },
+  "active": false, "settings": {}, "staticData": {}
+}
+JSON
+
+          cat > backtest/run_backtest.py << "PY"
+# backtest/run_backtest.py
+# 需求：pip install pandas numpy matplotlib yfinance
+import os, math, argparse
+import numpy as np, pandas as pd, yfinance as yf
+import matplotlib.pyplot as plt
+
+def ema(series, span): return series.ewm(span=span, adjust=False).mean()
+
+def rsi(series, period=14):
+    delta = series.diff()
+    up = delta.clip(lower=0); down = -delta.clip(upper=0)
+    roll_up = up.ewm(alpha=1/period, adjust=False).mean()
+    roll_down = down.ewm(alpha=1/period, adjust=False).mean()
+    rs = roll_up / (roll_down + 1e-12)
+    return 100 - (100 / (1 + rs))
+
+def bollinger(series, period=20, std=2.0):
+    ma = series.rolling(period).mean()
+    sigma = series.rolling(period).std()
+    upper = ma + std*sigma
+    lower = ma - std*sigma
+    return ma, upper, lower
+
+def generate_signals(df, conf_bonus=True):
+    df = df.copy()
+    df['EMA_FAST'] = ema(df['Close'], 5)
+    df['EMA_SLOW'] = ema(df['Close'], 20)
+    df['RSI'] = rsi(df['Close'], 14)
+    mid, up, lo = bollinger(df['Close'], 20, 2.0)
+    df['BB_MID'], df['BB_UP'], df['BB_LO'] = mid, up, lo
+    df['cross_up_lo'] = (df['Close'].shift(1) < df['BB_LO'].shift(1)) & (df['Close'] >= df['BB_LO'])
+    df['cross_dn_up'] = (df['Close'].shift(1) > df['BB_UP'].shift(1)) & (df['Close'] <= df['BB_UP'])
+    cond_buy  = (df['RSI'] < 30) & df['cross_up_lo']
+    cond_sell = (df['RSI'] > 70) & df['cross_dn_up']
+    df['signal'] = 'HOLD'
+    df.loc[cond_buy,  'signal'] = 'BUY'
+    df.loc[cond_sell, 'signal'] = 'SELL'
+    conf = ['Weak']*len(df)
+    if conf_bonus:
+        bonus_buy  = (df['EMA_FAST'] > df['EMA_SLOW']) & cond_buy
+        bonus_sell = (df['EMA_FAST'] < df['EMA_SLOW']) & cond_sell
+        for i in df.index:
+            if cond_buy.loc[i]:  conf[df.index.get_loc(i)]  = 'Normal'
+            if cond_sell.loc[i]: conf[df.index.get_loc(i)]  = 'Normal'
+        for i in df.index:
+            if df.at[i,'signal']=='BUY'  and bonus_buy.loc[i]:  conf[df.index.get_loc(i)]='Strong'
+            if df.at[i,'signal']=='SELL' and bonus_sell.loc[i]: conf[df.index.get_loc(i)]='Strong'
+    df['confidence'] = conf
+    return df
+
+def backtest(df, commission=0.001425, slippage=0.0005, initial=1_000_000):
+    df = df.copy()
+    df['position'] = 0
+    pos = 0; cash = initial; shares = 0
+    equity = []
+    for i in range(len(df)):
+        sig = df.iloc[i]['signal']; px = df.iloc[i]['Close']
+        if pos == 0 and sig == 'BUY':
+            buy_px = px*(1+slippage)
+            shares = math.floor((cash*(1-commission))/buy_px)
+            cost = shares*buy_px; fee = cost*commission
+            cash -= (cost + fee); pos = 1
+        elif pos == 1 and sig == 'SELL':
+            sell_px = px*(1-slippage)
+            proceeds = shares*sell_px; fee = proceeds*commission
+            cash += (proceeds - fee); pos = 0; shares = 0
+        equity.append(cash + (shares*px if shares>0 else 0))
+    df['equity'] = equity
+    roll_max = df['equity'].cummax()
+    drawdown = df['equity']/roll_max - 1
+    metrics = {
+        'annual_return': (df['equity'].iloc[-1]/df['equity'].iloc[0])**(252/len(df)) - 1,
+        'max_drawdown' : float(drawdown.min())
+    }
+    trades = df[df['signal'].isin(['BUY','SELL'])][['signal','Close']]
+    return df, metrics, trades
+
+def plot_equity(df, out_png):
+    plt.figure(figsize=(10,4))
+    plt.plot(df.index, df['equity'])
+    plt.title('Equity Curve'); plt.xlabel('Date'); plt.ylabel('TWD')
+    plt.tight_layout(); plt.savefig(out_png, dpi=160)
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--symbol', default='2330.TW')
+    parser.add_argument('--start', default='2023-01-01')
+    parser.add_argument('--end',   default='2025-09-30')
+    parser.add_argument('--commission', type=float, default=0.001425)
+    parser.add_argument('--slippage',   type=float, default=0.0005)
+    args = parser.parse_args()
+    df = yf.download(args.symbol, start=args.start, end=args.end, auto_adjust=True)
+    df = df.rename_axis('Date').reset_index().set_index('Date')
+    df = generate_signals(df)
+    bt_df, metrics, trades = backtest(df, commission=args.commission, slippage=args.slippage)
+    os.makedirs('backtest_out', exist_ok=True)
+    plot_equity(bt_df, f'backtest_out/{args.symbol}_equity.png')
+    trades.to_csv(f'backtest_out/{args.symbol}_trades.csv', index=True, encoding="utf-8-sig")
+    print(f"Annual Return: {metrics['annual_return']:.2%}")
+    print(f"Max Drawdown : {metrics['max_drawdown']:.2%}")
+    print(f"Signals saved to backtest_out/{args.symbol}_trades.csv")
+    print(f"Chart   saved to backtest_out/{args.symbol}_equity.png")
+
+if __name__ == "__main__":
+    main()
+PY
+
+          echo "✅ Scaffold done (inline)."
+        '
+    outputs:
+      - "config/rules.yaml"
+      - "n8n/workflow.json"
+      - "backtest/run_backtest.py"
+    success_criteria:
+      - "三個檔案存在且非空"
+      - "可執行 backtest/run_backtest.py 並生成 charts 與 trades.csv"
+  scaffold_workflow_adv:
+    description: "產生含 OpenAI + Google Sheet + Email 的 n8n 進階工作流（可直接匯入）"
+    run:
+      windows: |
+        powershell -NoProfile -NonInteractive -Command "& {
+          $ErrorActionPreference='Stop'; mkdir n8n -ea 0 | Out-Null;
+          $json = @'
+{
+  "name": "TW Stock Signals — Advanced (OpenAI + Sheet + Email)",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": [{ "item": "everyDay", "hour": 17, "minute": 10 }],
+        "timezone": "Asia/Taipei"
+      },
+      "id": "Cron",
+      "name": "Cron (17:10 TST)",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [-760, 120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const symbols=['2330.TW','0050.TW']; const now=new Date(); const end=Math.floor(now.getTime()/1000); const start=Math.floor(new Date(now.getTime()-90*24*3600*1000).getTime()/1000); return symbols.map(s=>({json:{symbol:s,period1:start,period2:end}}));"
+      },
+      "id": "Init",
+      "name": "Init Symbols",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [-540, 120]
+    },
+    {
+      "parameters": {
+        "url": "https://query1.finance.yahoo.com/v7/finance/download={{$json.symbol}}?period1={{$json.period1}}&period2={{$json.period2}}&interval=1d&events=history&includeAdjustedClose=true",
+        "responseFormat": "string",
+        "options": { "timeout": 30000 }
+      },
+      "id": "Fetch",
+      "name": "Fetch Yahoo CSV",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-300, 120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const text=$json.data||''; const lines=text.split(/\\r?\\n/).filter(Boolean); const head=lines.shift(); if(!head) return [{json:{note:'no data'}}]; const cols=head.split(','); const iD=cols.indexOf('Date'); const iC=cols.indexOf('Close'); const rows=lines.map(r=>r.split(',')); const closes=rows.map(r=>({date:r[iD], close:parseFloat(r[iC])})).filter(x=>!isNaN(x.close)); const symbol=$item(0).$node['Init Symbols'].json.symbol; return [{json:{symbol, closes:closes.slice(-60)}}];"
+      },
+      "id": "Parse",
+      "name": "Parse CSV (keep symbol)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [-60, 120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const closes=$json.closes||[]; const symbol=$json.symbol; if(closes.length<25){return[{json:{symbol, note:'not enough data', signal:'HOLD', confidence:'Weak'}}];} const closeArr=closes.map(x=>Number(x.close)); const dateArr=closes.map(x=>x.date); const ema=(a,s)=>{const k=2/(s+1);let o=[],p=null;for(const v of a){p=(p===null)?v:(v*k+p*(1-k));o.push(p);}return o;}; const rsi=(a,n=14)=>{const g=[],l=[]; for(let i=1;i<a.length;i++){const d=a[i]-a[i-1]; g.push(Math.max(d,0)); l.push(Math.max(-d,0));} const e=(x,n)=>{const k=2/(n+1); let p=null,o=[]; for(const v of x){p=(p===null)?v:(v*k+p*(1-k)); o.push(p);} return o;}; const up=e(g,n), dn=e(l,n); const out=[NaN]; for(let i=0;i<up.length;i++){const rs=up[i]/((dn[i]||1e-9)); out.push(100-100/(1+rs));} return out;}; const roll=(a,n)=>{const m=[],s=[]; for(let i=0;i<a.length;i++){ if(i<n-1){m.push(NaN); s.push(NaN); continue;} const w=a.slice(i-n+1,i+1); const mean=w.reduce((x,y)=>x+y,0)/n; const varr=w.reduce((x,y)=>x+(y-mean)*(y-mean),0)/n; m.push(mean); s.push(Math.sqrt(varr)); } return {m,s};}; const EMA5=ema(closeArr,5), EMA20=ema(closeArr,20), RSI14=rsi(closeArr,14); const {m:BB_MID,s:BB_SD}=roll(closeArr,20); const BB_UP=BB_MID.map((m,i)=>m+2*(BB_SD[i]??NaN)); const BB_LO=BB_MID.map((m,i)=>m-2*(BB_SD[i]??NaN)); const n=closeArr.length; const c0=closeArr[n-1], c1=closeArr[n-2]; const lo0=BB_LO[n-1], lo1=BB_LO[n-2]; const up0=BB_UP[n-1], up1=BB_UP[n-2]; const r0=RSI14[n-1]; const crossUpLo=(c1<lo1)&&(c0>=lo0); const crossDnUp=(c1>up1)&&(c0<=up0); let signal='HOLD', why=[]; if(r0<30&&crossUpLo){signal='BUY';why.push('RSI<30 & 收盤上穿下軌');} if(r0>70&&crossDnUp){signal='SELL';why.push('RSI>70 & 收盤跌回上軌下');} let confidence='Weak'; if(signal==='BUY' && EMA5[n-1]>EMA20[n-1]) confidence='Strong'; if(signal==='SELL'&& EMA5[n-1]<EMA20[n-1]) confidence='Strong'; if(signal!=='HOLD'&&confidence==='Weak') confidence='Normal'; return[{json:{symbol,date:dateArr[n-1],close:c0,rsi14:r0,bb_lower:lo0,bb_upper:up0,ema5:EMA5[n-1],ema20:EMA20[n-1],signal,confidence,reason:(why.length?why.join(' / '):'無觸發；維持觀望')}}];"
+      },
+      "id": "Decide",
+      "name": "Compute & Decide",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [200, 120]
+    },
+    {
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o-mini",
+        "messages": {
+          "message": [
+            {
+              "text": "你是台股技術分析助理。請用≤3 行繁中總結：\\n- 股票：{{$json.symbol}}，日期：{{$json.date}}，收盤：{{$json.close}}\\n- RSI(14)：{{$json.rsi14}}；布林(20,2)：{{$json.bb_lower}}~{{$json.bb_upper}}；EMA(5/20)：{{$json.ema5}}/{{$json.ema20}}\\n- 系統訊號：{{$json.signal}}（{{$json.confidence}}）。說明觸發條件與風險（量縮、長影線、逆勢）。最後一句加「僅供研究示範」。",
+              "type": "user"
+            }
+          ]
+        },
+        "additionalFields": {
+          "temperature": 0.2,
+          "responseFormat": "text",
+          "simplifyOutput": true
+        }
+      },
+      "id": "Explain",
+      "name": "Explain (OpenAI)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 4,
+      "position": [460, 120],
+      "notesInFlow": true,
+      "notes": "匯入後於此選擇 OpenAI Credentials 與想用的模型（可改成 gpt-5-thinking / gpt-4.1）。"
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            { "name": "date", "value": "={{$json.date}}" },
+            { "name": "symbol", "value": "={{$json.symbol}}" },
+            { "name": "close", "value": "={{$json.close}}" },
+            { "name": "rsi14", "value": "={{$json.rsi14}}" },
+            { "name": "bb_lower", "value": "={{$json.bb_lower}}" },
+            { "name": "bb_upper", "value": "={{$json.bb_upper}}" },
+            { "name": "ema5", "value": "={{$json.ema5}}" },
+            { "name": "ema20", "value": "={{$json.ema20}}" },
+            { "name": "signal", "value": "={{$json.signal}}" },
+            { "name": "confidence", "value": "={{$json.confidence}}" },
+            { "name": "llm_reason", "value": "={{$node['Explain (OpenAI)'].json['response']}}" }
+          ]
+        }
+      },
+      "id": "Prepare",
+      "name": "Prepare Row",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [720, 120]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "__REPLACE_WITH_GOOGLE_SHEET_ID__",
+        "range": "signals_log!A:K",
+        "options": {
+          "valueInputMode": "RAW",
+          "autoMapInputData": true
+        }
+      },
+      "id": "Sheet",
+      "name": "Google Sheets: Append",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 2,
+      "position": [980, 80],
+      "notesInFlow": true,
+      "notes": "匯入後在此選擇 Google 憑證，並把 sheetId 換成你的 Spreadsheet ID。"
+    },
+    {
+      "parameters": {
+        "fromEmail": "__REPLACE_FROM__",
+        "toEmail": "__REPLACE_TO__",
+        "subject": "=[{{$json.symbol}}] {{$json.signal}}（{{$json.confidence}}）",
+        "text": "日期：{{$json.date}}\n收盤：{{$json.close}}\nRSI(14)：{{$json.rsi14}}\n布林(20,2)：{{$json.bb_lower}} ~ {{$json.bb_upper}}\nEMA(5/20)：{{$json.ema5}} / {{$json.ema20}}\n理由：{{$json.llm_reason}}\n＊僅供研究示範",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "Email",
+      "name": "Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [980, 170],
+      "notesInFlow": true,
+      "notes": "匯入後在此選 SMTP 憑證或填寫連線資訊、收件人。"
+    }
+  ],
+  "connections": {
+    "Cron (17:10 TST)": { "main": [[{ "node": "Init Symbols", "type": "main", "index": 0 }]] },
+    "Init Symbols":     { "main": [[{ "node": "Fetch Yahoo CSV", "type": "main", "index": 0 }]] },
+    "Fetch Yahoo CSV":  { "main": [[{ "node": "Parse CSV (keep symbol)", "type": "main", "index": 0 }]] },
+    "Parse CSV (keep symbol)": { "main": [[{ "node": "Compute & Decide", "type": "main", "index": 0 }]] },
+    "Compute & Decide": { "main": [[{ "node": "Explain (OpenAI)", "type": "main", "index": 0 }]] },
+    "Explain (OpenAI)": { "main": [[{ "node": "Prepare Row", "type": "main", "index": 0 }]] },
+    "Prepare Row":      { "main": [[{ "node": "Google Sheets: Append", "type": "main", "index": 0 }, { "node": "Email", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {},
+  "staticData": {}
+}
+'@; Set-Content -Path 'n8n/workflow.advanced.json' -Value $json -Encoding UTF8;
+          Write-Host '✅ Generated n8n/workflow.advanced.json';
+        }"
+      posix: |
+        bash -lc '
+          set -euo pipefail
+          mkdir -p n8n
+          cat > n8n/workflow.advanced.json << "JSON"
+{  "name":"TW Stock Signals — Advanced (OpenAI + Sheet + Email)",  "nodes":[
+  { "parameters":{"triggerTimes":[{"item":"everyDay","hour":17,"minute":10}],"timezone":"Asia/Taipei"}, "id":"Cron","name":"Cron (17:10 TST)","type":"n8n-nodes-base.cron","typeVersion":1,"position":[-760,120]},
+  { "parameters":{"functionCode":"const symbols=['2330.TW','0050.TW']; const now=new Date(); const end=Math.floor(now.getTime()/1000); const start=Math.floor(new Date(now.getTime()-90*24*3600*1000).getTime()/1000); return symbols.map(s=>({json:{symbol:s,period1:start,period2:end}}));"}, "id":"Init","name":"Init Symbols","type":"n8n-nodes-base.function","typeVersion":2,"position":[-540,120]},
+  { "parameters":{"url":"https://query1.finance.yahoo.com/v7/finance/download={{$json.symbol}}?period1={{$json.period1}}&period2={{$json.period2}}&interval=1d&events=history&includeAdjustedClose=true","responseFormat":"string","options":{"timeout":30000}}, "id":"Fetch","name":"Fetch Yahoo CSV","typeVersion":4,"type":"n8n-nodes-base.httpRequest","position":[-300,120]},
+  { "parameters":{"functionCode":"const text=$json.data||''; const lines=text.split(/\\r?\\n/).filter(Boolean); const head=lines.shift(); if(!head) return [{json:{note:'no data'}}]; const cols=head.split(','); const iD=cols.indexOf('Date'); const iC=cols.indexOf('Close'); const rows=lines.map(r=>r.split(',')); const closes=rows.map(r=>({date:r[iD], close:parseFloat(r[iC])})).filter(x=>!isNaN(x.close)); const symbol=$item(0).$node['Init Symbols'].json.symbol; return [{json:{symbol, closes:closes.slice(-60)}}];"}, "id":"Parse","name":"Parse CSV (keep symbol)","typeVersion":2,"type":"n8n-nodes-base.function","position":[-60,120]},
+  { "parameters":{"functionCode":"const closes=$json.closes||[]; const symbol=$json.symbol; if(closes.length<25){return[{json:{symbol, note:'not enough data', signal:'HOLD', confidence:'Weak'}}];} const closeArr=closes.map(x=>Number(x.close)); const dateArr=closes.map(x=>x.date); const ema=(a,s)=>{const k=2/(s+1);let o=[],p=null;for(const v of a){p=(p===null)?v:(v*k+p*(1-k));o.push(p);}return o;}; const rsi=(a,n=14)=>{const g=[],l=[]; for(let i=1;i<a.length;i++){const d=a[i]-a[i-1]; g.push(Math.max(d,0)); l.push(Math.max(-d,0));} const e=(x,n)=>{const k=2/(n+1); let p=null,o=[]; for(const v of x){p=(p===null)?v:(v*k+p*(1-k)); o.push(p);} return o;}; const up=e(g,n), dn=e(l,n); const out=[NaN]; for(let i=0;i<up.length;i++){const rs=up[i]/((dn[i]||1e-9)); out.push(100-100/(1+rs));} return out;}; const roll=(a,n)=>{const m=[],s=[]; for(let i=0;i<a.length;i++){ if(i<n-1){m.push(NaN); s.push(NaN); continue;} const w=a.slice(i-n+1,i+1); const mean=w.reduce((x,y)=>x+y,0)/n; const varr=w.reduce((x,y)=>x+(y-mean)*(y-mean),0)/n; m.push(mean); s.push(Math.sqrt(varr)); } return {m,s};}; const EMA5=ema(closeArr,5), EMA20=ema(closeArr,20), RSI14=rsi(closeArr,14); const {m:BB_MID,s:BB_SD}=roll(closeArr,20); const BB_UP=BB_MID.map((m,i)=>m+2*(BB_SD[i]??NaN)); const BB_LO=BB_MID.map((m,i)=>m-2*(BB_SD[i]??NaN)); const n=closeArr.length; const c0=closeArr[n-1], c1=closeArr[n-2]; const lo0=BB_LO[n-1], lo1=BB_LO[n-2]; const up0=BB_UP[n-1], up1=BB_UP[n-2]; const r0=RSI14[n-1]; const crossUpLo=(c1<lo1)&&(c0>=lo0); const crossDnUp=(c1>up1)&&(c0<=up0); let signal='HOLD', why=[]; if(r0<30&&crossUpLo){signal='BUY';why.push('RSI<30 & 收盤上穿下軌');} if(r0>70&&crossDnUp){signal='SELL';why.push('RSI>70 & 收盤跌回上軌下');} let confidence='Weak'; if(signal==='BUY' && EMA5[n-1]>EMA20[n-1]) confidence='Strong'; if(signal==='SELL'&& EMA5[n-1]<EMA20[n-1]) confidence='Strong'; if(signal!=='HOLD'&&confidence==='Weak') confidence='Normal'; return[{json:{symbol,date:dateArr[n-1],close:c0,rsi14:r0,bb_lower:lo0,bb_upper:up0,ema5:EMA5[n-1],ema20:EMA20[n-1],signal,confidence,reason:(why.length?why.join(' / '):'無觸發；維持觀望')}}];"}, "id":"Decide","name":"Compute & Decide","typeVersion":2,"type":"n8n-nodes-base.function","position":[200,120]},
+  { "parameters":{"operation":"chat","model":"gpt-4o-mini","messages":{"message":[{"text":"你是台股技術分析助理。請用≤3 行繁中總結：\\n- 股票：{{$json.symbol}}，日期：{{$json.date}}，收盤：{{$json.close}}\\n- RSI(14)：{{$json.rsi14}}；布林(20,2)：{{$json.bb_lower}}~{{$json.bb_upper}}；EMA(5/20)：{{$json.ema5}}/{{$json.ema20}}\\n- 系統訊號：{{$json.signal}}（{{$json.confidence}}）。說明觸發條件與風險（量縮、長影線、逆勢）。最後一句加「僅供研究示範」。","type":"user"}]},"additionalFields":{"temperature":0.2,"responseFormat":"text","simplifyOutput":true}}, "id":"Explain","name":"Explain (OpenAI)","type":"n8n-nodes-base.openAi","typeVersion":4,"position":[460,120]},
+  { "parameters":{"keepOnlySet":true,"values":{"string":[{"name":"date","value":"={{$json.date}}"},{"name":"symbol","value":"={{$json.symbol}}"},{"name":"close","value":"={{$json.close}}"},{"name":"rsi14","value":"={{$json.rsi14}}"},{"name":"bb_lower","value":"={{$json.bb_lower}}"},{"name":"bb_upper","value":"={{$json.bb_upper}}"},{"name":"ema5","value":"={{$json.ema5}}"},{"name":"ema20","value":"={{$json.ema20}}"},{"name":"signal","value":"={{$json.signal}}"},{"name":"confidence","value":"={{$json.confidence}}"},{"name":"llm_reason","value":"={{$node['Explain (OpenAI)'].json['response']}}"}]}}, "id":"Prepare","name":"Prepare Row","type":"n8n-nodes-base.set","typeVersion":2,"position":[720,120]},
+  { "parameters":{"operation":"append","sheetId":"__REPLACE_WITH_GOOGLE_SHEET_ID__","range":"signals_log!A:K","options":{"valueInputMode":"RAW","autoMapInputData":true}}, "id":"Sheet","name":"Google Sheets: Append","type":"n8n-nodes-base.googleSheets","typeVersion":2,"position":[980,80]},
+  { "parameters":{"fromEmail":"__REPLACE_FROM__","toEmail":"__REPLACE_TO__","subject":"=[{{$json.symbol}}] {{$json.signal}}（{{$json.confidence}}）","text":"日期：{{$json.date}}\\n收盤：{{$json.close}}\\nRSI(14)：{{$json.rsi14}}\\n布林(20,2)：{{$json.bb_lower}} ~ {{$json.bb_upper}}\\nEMA(5/20)：{{$json.ema5}} / {{$json.ema20}}\\n理由：{{$json.llm_reason}}\\n＊僅供研究示範","options":{"allowUnauthorizedCerts":true}}, "id":"Email","name":"Email","typeVersion":2,"type":"n8n-nodes-base.emailSend","position":[980,170]}
+], "connections":{
+  "Cron (17:10 TST)":{"main":[[{"node":"Init Symbols","type":"main","index":0}]]},
+  "Init Symbols":{"main":[[{"node":"Fetch Yahoo CSV","type":"main","index":0}]]},
+  "Fetch Yahoo CSV":{"main":[[{"node":"Parse CSV (keep symbol)","type":"main","index":0}]]},
+  "Parse CSV (keep symbol)":{"main":[[{"node":"Compute & Decide","type":"main","index":0}]]},
+  "Compute & Decide":{"main":[[{"node":"Explain (OpenAI)","type":"main","index":0}]]},
+  "Explain (OpenAI)":{"main":[[{"node":"Prepare Row","type":"main","index":0}]]},
+  "Prepare Row":{"main":[[{"node":"Google Sheets: Append","type":"main","index":0},{"node":"Email","type":"main","index":0}]]}
+}, "active":false, "settings":{}, "staticData":{} }
+JSON
+          echo "✅ Generated n8n/workflow.advanced.json"
+        '
+    outputs:
+      - "n8n/workflow.advanced.json"
+    success_criteria:
+      - "n8n/workflow.advanced.json 存在且非空"
+      - "匯入 n8n 後可看到 OpenAI、Google Sheets、Email 節點並成功手動執行"
+
+deliverables:
+  - type: slides
+    spec: "20 頁簡報或 PDR 產品設計藍圖（含講者備註）"
+  - type: video
+    spec: "約 10 分鐘 AI 影片（旁白腳本＋Demo 錄影）"
+  - type: demo
+    spec: "可運行 n8n Workflow：收盤後自動產生買賣觀望與中文解釋、推播、記錄"
+  - type: report
+    spec: "回測報告（HTML/PNG：資產曲線、回撤、交易列表）"
+
+principles:
+  - "MVP、可測試、可示範；避免過度設計"
+  - "全介面、文件與通知一律使用繁體中文"
+  - "僅使用免費開源資料來源，不得依賴付費 TradingView"
+  - "交易規則需可配置，指標模型可隨時替換"
+  - "API 金鑰與敏感憑證不得入庫，需以安全機制動態載入"
+  - "端到端流程需完整涵蓋：資料抓取 → 指標計算 → 訊號判定 → AI 中文解釋 → 推播 → 紀錄 → 回測"
