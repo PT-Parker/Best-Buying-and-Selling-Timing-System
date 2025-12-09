@@ -1,59 +1,58 @@
-# Best Buying and Selling Timing System
+# 股市進出場時機系統（Streamlit 版）
 
-Streamlit application for analysing Taiwan stock strategies end-to-end: ingest sample or live Yahoo Finance data, engineer features, run the indicator-based backtest, surface buy/sell signals, and manage model versions – all without touching the CLI.
+單一入口的 Streamlit 應用，整合行情抓取（yfinance）、特徵工程、模型訓練/驗證、回測績效、決策卡與待執行清單。支援自動刷新行情、調整驗證視窗、模擬下單與操作日誌。
 
-## Key Features
-- **Single Streamlit entry point** (`streamlit run app.py`) with sidebar controls for watchlist、日期區間與指標參數，後端始終透過 yfinance 取得即時 OHLCV。
-- **Signal dashboard** summarising the latest buy/sell recommendations, confidence, rationale, and QC anomalies with CSV export.
-- **Backtest view** showing metrics (CAGR, MDD, win rate), equity curve, and trade ledger per symbol with download buttons.
-- **Model registry & training** preview of the latest XGBoost classifier metrics plus an Advanced-mode action to retrain using the current dataset.
-- **Feature preview** to inspect engineered indicators feeding the ML/strategy layers.
-- **Data abstraction** through `services/data_source.py` that supports sample CSVs (for Streamlit Cloud), yfinance downloads, or future extensions.
+## 功能亮點
+- **即時決策卡**：最新行情＋模型機率＋期望報酬，低於門檻或期望報酬為負時自動顯示觀望；達標可一鍵加入待執行清單。
+- **自動刷新行情**：側邊欄可設定刷新秒數（0=關閉），定期重跑決策。
+- **可調驗證視窗**：自訂「驗證天數」與「驗證結束日」，重新訓練時會依設定切出訓練/驗證資料。
+- **模型訓練與回測**：XGBoost 分類器，訓練時引入隨機種子確保每次重訓結果不同；驗證回測展示年化報酬、最大回撤、勝率、交易紀錄與資金曲線。
+- **價格預測**：以最新模型的機率與停利/停損推算未來 N 日價格走勢。
+- **待執行清單／模擬下單**：決策卡可加入待執行單，支援「模擬成交／取消」並保留操作日誌，可下載 CSV。
+- **參數控管**：側邊欄可調 EMA、RSI、布林、停利停損、初始資金、模型機率門檻、驗證視窗。
 
-## Project Layout
+## 專案結構
 ```
-app.py                    # Streamlit UI
-core/                     # Pure analytics primitives (backtest, features, labeling, inference)
-services/                 # Data loading, backtest orchestration, signals, model registry
-config/                   # Watchlist + strategy defaults
-data/sample/              # Self-contained demo dataset for cloud deployments
-metrics/                  # JSONL registries (model history, etc.)
-tests/                    # Unit tests covering core/services layers
+app.py                  # Streamlit 入口與 UI/流程
+core/                   # backtest、特徵、標記、模型訓練
+services/               # 資料來源、信號彙總、回測、模型 registry
+config/                 # watchlist + 策略/標記預設
+models/                 # 最新模型檔 (model_latest.json)
+metrics/                # 模型 registry（JSONL）
+tests/                  # 單元測試
+.streamlit/             # Streamlit 設定
 ```
 
-## Getting Started
-1. **Environment**
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\activate  # on Windows
-   pip install -r requirements.txt
-   ```
-2. **Configuration**
-   - Copy `.env.example` to `.env` and adjust as needed（主要是 watchlist / registry 路徑設定）。
-   - Update `config/watchlist.yaml` 以及 `config/strategy.yaml`；`strategy.yaml` 內現在包含 `labeling` 區塊，可調整 `horizon_days`、`take_profit_pct`、`stop_loss_pct` 來同時產生作多/作空的標記。
-3. **Run locally**
-   ```bash
-   streamlit run app.py
-   ```
-   App 會直接從 yfinance 下載資料，請確保環境具備網路與 `yfinance` 套件。
-
-### 模型訓練時間窗
-- 在 Advanced 模式按下「以目前資料重新訓練模型」時，系統會自動：
-  1. 以「今天往前 30 天」的日期為訓練結束日，往前再取一年做訓練樣本（建立訊號與標籤）。
-  2. 以訓練結束日隔天到今天為驗證區間，對照模型預測與實際標籤，顯示驗證 Precision / Recall / F1。
-- 兩段資料都透過 yfinance 取得，無需手動切換日期或資料來源。
-
-## Deployment Notes
-- **Streamlit Cloud**: keep `DATA_MODE=sample` and commit the latest `data/sample/*.csv` so the app runs without external data sources.
-- **Local full mode**: set `DATA_MODE=auto` (default) and ensure outbound network access for yfinance. Set `STREAMLIT_OFFLINE=1` if you need to force sample data even when online.
-- **Model registry**: artifacts are appended to `metrics/model_registry.jsonl`. Provide persistent storage or replace with a remote bucket if deploying multi-user.
-
-## Testing
+## 安裝與執行
+1) 安裝套件（Python 3.10+）  
+```bash
+python -m venv .venv
+.venv\Scripts\activate   # Windows
+pip install -r requirements.txt
 ```
+2) 啟動  
+```bash
+streamlit run app.py
+```
+3) 使用方式  
+- 選擇股票、資料期間，調整技術參數、模型門檻、初始資金、驗證視窗。  
+- 按「更新行情並生成今日決策卡」取得最新建議；若顯示「考慮進場」可加入待執行清單。  
+- 若需更新模型，按「以目前資料重新訓練模型」；訓練後會自動刷新決策卡並重置待執行單/日誌。  
+- 「生成價格預測」可查看未來 N 日價格推估。
+
+## 主要參數
+- **自動刷新行情**：0 表示關閉，自訂秒數可定期重算決策。  
+- **驗證天數／驗證結束日**：決定訓練/驗證切分，回測績效與決策卡依此更新。  
+- **模型進場機率門檻**：低於門檻或期望報酬 <= 0 則觀望。  
+- **初始資金**：預設 1,500,000，用於回測與風險預算（建議部位計算）。  
+
+## 測試
+```bash
 pytest
 ```
-The suite covers backtest mechanics, parameter sweeps, labeling logic, and signal summarisation.
 
-## Roadmap / Next Steps
-- Integrate optional realtime twstock feed inside `services/data_source`.
-- Add authentication or sharing controls before exposing on public Streamlit Cloud workspaces.
+## 注意事項
+- 只支援 yfinance 資料來源，需可連外。  
+- 每次訓練使用當前時間作為 random_state，結果會有隨機性；如需可重現，請自行固定 random_state。  
+- 待執行清單與日誌儲存在 session_state，重啟後需重新產生。  
+- 推送前請確保未包含任何敏感金鑰或憑證。  

@@ -1,5 +1,0 @@
-﻿
-BASE_URL=http://localhost:5678
-UI: ERROR 遠端伺服器傳回一個錯誤: (404) 找不到。
-API: SKIP (N8N_API_KEY not set)
-WEBHOOK: ERROR The remote server returned an error: (404) Not Found. -> http://localhost:5678/webhook/tw-live-signal

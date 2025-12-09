@@ -1,7 +1,0 @@
-windows_wsl_setup_acknowledged = true
-
-[projects.'C:\Users\Parker\Desktop\電宰雞報告\1017屠宰']
-trust_level = "trusted"
-
-[projects.'\\?\C:\Users\Parker\Best Buying and Selling Timing System']
-trust_level = "trusted"
