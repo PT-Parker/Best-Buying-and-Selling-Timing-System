@@ -3,7 +3,11 @@ pandas>=1.5
 matplotlib
 yfinance
 PyYAML>=6.0
-python-pptx
 twstock==1.4.0
 python-dateutil>=2.8.2
-requests>=2.31.0
+pyarrow>=14.0.1
+pyreadr>=0.4.9
+scikit-learn>=1.3.0
+xgboost>=1.7.6
+streamlit>=1.32
+plotly>=5.20
