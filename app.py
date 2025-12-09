@@ -367,8 +367,12 @@ def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: Stra
         st.info("尚未有模型版本紀錄。")
 
     st.caption(f"模型進場機率門檻：{prob_threshold:.2f}")
-    if st.button("以目前資料重新訓練模型"):
+    train_col1, train_col2 = st.columns([1, 3])
+    trigger_train = train_col1.button("以目前資料重新訓練模型")
+    progress_bar = train_col2.empty()
+    if trigger_train:
         try:
+            progress_bar = progress_bar.progress(5, text="初始化模型訓練...")
             (
                 artifacts,
                 validation_metrics,
@@ -384,6 +388,7 @@ def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: Stra
                 validation_days=st.session_state.get("validation_days_selected", 120),
                 validation_end=st.session_state.get("validation_end_selected", date.today()),
             )
+            progress_bar.progress(35, text="訓練完成，寫入 registry...")
             st.session_state.pop("model_ctx", None)
             registry.append(
                 {
@@ -409,6 +414,7 @@ def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: Stra
             st.session_state.pop("op_logs", None)
             st.session_state.pop("latest_decision_summary", None)
             st.session_state["decision_needs_refresh"] = True
+            progress_bar.progress(80, text="驗證回測計算中...")
             st.success(
                 f"模型已重新訓練並寫入 registry。訓練期間 {windows['train']}, 驗證期間 {windows['validation']}。"
             )
@@ -420,8 +426,10 @@ def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: Stra
             st.session_state["latest_validation_bt"] = validation_backtest
             st.session_state["latest_validation_window"] = windows["validation"]
             st.session_state["latest_validation_prices"] = validation_prices
+            progress_bar.progress(100, text="完成！")
         except Exception as exc:  # pragma: no cover - UI error path
             st.error(f"模型訓練失敗：{exc}")
+            progress_bar.empty()
 
 
 def _render_feature_preview(prices: pd.DataFrame):
