@@ -90,6 +90,7 @@ def model_backtest_from_predictions(
     df = df.sort_values("date").reset_index(drop=True)
     df["prediction"] = list(predictions)
     df["date"] = pd.to_datetime(df["date"])
+    df = df.dropna(subset=["close"]).reset_index(drop=True)
     cash = fees.initial_capital
     shares = 0
     planned_exit: int | None = None

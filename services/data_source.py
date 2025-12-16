@@ -86,7 +86,13 @@ def load_label_config(path: Path = STRATEGY_PATH) -> LabelConfig:
 def _download_prices(symbol: str, start: str, end: str) -> pd.DataFrame:
     if yf is None:
         raise RuntimeError("yfinance is not installed; cannot download prices")
-    df = yf.download(symbol, start=start, end=end, auto_adjust=True)
+    # 使用未調整價格，避免因股利/分割導致即時價顯示偏低
+    df = yf.download(symbol, start=start, end=end, auto_adjust=False)
+    # 移除零成交量或缺失的列，避免未收盤的虛值
+    if "Volume" in df.columns:
+        filtered = df[df["Volume"].fillna(0) > 0]
+        if not filtered.empty:
+            df = filtered
     if df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Sequence, Tuple
 
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import xgboost as xgb
 import streamlit as st
@@ -92,7 +93,11 @@ def _render_signal_section(summary: dict, strategy: StrategyConfig, prob_thresho
     score = row.get("score")
     signal = row.get("signal")
     action = "需先訓練模型" if score is None else ("考慮進場" if score >= prob_threshold else "觀望")
-    price = float(row.get("close", 0) or 0)
+    price_raw = row.get("close", None)
+    price = float(price_raw) if price_raw is not None else float("nan")
+    if pd.isna(price):
+        st.error("行情價格缺失，請稍後重試或調整日期區間。")
+        return
     tp_px = price * (1 + label_cfg.take_profit_pct)
     sl_px = price * (1 + label_cfg.stop_loss_pct)
     score_val = score or 0.0
@@ -104,6 +109,8 @@ def _render_signal_section(summary: dict, strategy: StrategyConfig, prob_thresho
     else:
         action = "考慮進場"
     risk_per_share = price * abs(label_cfg.stop_loss_pct) if label_cfg.stop_loss_pct != 0 else 0
+    if pd.isna(risk_per_share) or risk_per_share <= 0:
+        risk_per_share = 0.0
     risk_budget = fees.initial_capital * 0.01  # 1% 風險預算
     shares_suggest = int(risk_budget // risk_per_share) if (risk_per_share > 0 and action == "考慮進場") else 0
 
@@ -182,7 +189,7 @@ def _render_backtest_section(result: backtest_service.BacktestResult, title: str
             height=260,
             yaxis=dict(range=[y_min - padding, y_max + padding]),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     st.caption("交易紀錄（含損益）")
     trades = result.trades.copy() if not result.trades.empty else pd.DataFrame(columns=["entry_date", "exit_date", "pnl"])
@@ -203,7 +210,7 @@ def _render_backtest_section(result: backtest_service.BacktestResult, title: str
             "cumulative_pnl": "累計損益",
         }
     )
-    st.dataframe(display_trades, use_container_width=True)
+    st.dataframe(display_trades, width="stretch")
     if not trades.empty:
         st.download_button(
             "下載交易紀錄",
@@ -264,7 +271,7 @@ def _render_validation_chart(prices: pd.DataFrame, trades: pd.DataFrame, title: 
             ]
         ),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def _load_latest_model():
@@ -435,7 +442,7 @@ def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: Stra
 def _render_feature_preview(prices: pd.DataFrame):
     st.subheader("特徵預覽 (最近 10 筆)")
     feats = build_features(prices, FeatureConfig())
-    st.dataframe(feats.tail(10), use_container_width=True)
+    st.dataframe(feats.tail(10), width="stretch")
 
 
 def _update_order_status(order_id: int, status: str, fill_price: float | None = None):
@@ -488,7 +495,7 @@ def _render_op_logs():
         st.info("尚無操作日誌。")
         return
     df = pd.DataFrame(logs)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
     st.download_button("下載日誌", df.to_csv(index=False).encode("utf-8-sig"), file_name="op_logs.csv")
 
 
@@ -543,6 +550,7 @@ def _train_model_with_windows(
             .fillna(0)
         )
         proba_all = artifacts.model.predict_proba(X_val_all)[:, 1]
+        proba_all = np.nan_to_num(proba_all, nan=0.0, neginf=0.0, posinf=1.0)
         threshold = prob_threshold
         pred_full = (proba_all >= threshold).astype(int)
         if pred_full.sum() == 0:
@@ -685,8 +693,8 @@ def main():
                         ]
                     ),
                 )
-                st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(forecast_df, hide_index=True, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
+                st.dataframe(forecast_df, hide_index=True, width="stretch")
         except Exception as exc:
             st.error(f"無法產生預測：{exc}")
 

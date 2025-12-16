@@ -66,7 +66,7 @@ def _compute_volume_zscore(series: pd.Series, window: int) -> pd.Series:
 def build_features(prices: pd.DataFrame, config: FeatureConfig | None = None) -> pd.DataFrame:
     cfg = config or FeatureConfig()
     df = prices.copy()
-    base_cols = {"open", "high", "low", "close", "volume"}
+    base_cols = {"open", "high", "low", "close", "volume", "adj close", "adj_close", "adjclose"}
     grouped = _grouped(df)
 
     for feature in cfg.features:
@@ -94,10 +94,10 @@ def build_features(prices: pd.DataFrame, config: FeatureConfig | None = None) ->
             df[feature] = grouped["volume"].transform(lambda s: _compute_volume_zscore(s, window))
         elif feature.startswith(RETURN_PREFIX):
             window = int(feature.replace(RETURN_PREFIX, ""))
-            df[feature] = grouped["close"].transform(lambda s: s.pct_change(window))
+            df[feature] = grouped["close"].transform(lambda s: s.pct_change(window, fill_method=None))
         elif feature.startswith(VOLATILITY_PREFIX):
             window = int(feature.replace(VOLATILITY_PREFIX, ""))
-            df[feature] = grouped["close"].transform(lambda s: s.pct_change().rolling(window).std())
+            df[feature] = grouped["close"].transform(lambda s: s.pct_change(fill_method=None).rolling(window).std())
         else:
             raise ValueError(f"Unsupported feature definition: {feature}")
 
