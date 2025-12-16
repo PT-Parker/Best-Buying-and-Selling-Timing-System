@@ -40,6 +40,10 @@ streamlit run app.py
 - 若需更新模型，按「以目前資料重新訓練模型」；訓練後會自動刷新決策卡並重置待執行單/日誌。  
 - 「生成價格預測」可查看未來 N 日價格推估。
 
+## 在線 demo
+已部署於 Streamlit Cloud：  
+https://best-buying-and-selling-timing-system-7xadsrumttrvw6tffxn6y2.streamlit.app/
+
 ## 主要參數
 - **自動刷新行情**：0 表示關閉，自訂秒數可定期重算決策。  
 - **驗證天數／驗證結束日**：決定訓練/驗證切分，回測績效與決策卡依此更新。  

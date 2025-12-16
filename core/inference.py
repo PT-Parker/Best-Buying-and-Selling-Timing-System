@@ -79,6 +79,8 @@ def train_classifier(
         params.setdefault("scale_pos_weight", max(1.0, neg_count / max(1, pos_count)))
 
     model = xgb.XGBClassifier(**params)
+    # 明確標註為 classifier，避免部分環境缺 _estimator_type
+    model._estimator_type = "classifier"
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
