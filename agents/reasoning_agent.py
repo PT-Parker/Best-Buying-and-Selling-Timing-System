@@ -30,7 +30,8 @@ class ReasoningAgent:
 
     def decide(self, prices: pd.DataFrame, symbol: str, news_text: str = "", prob_threshold: float = 0.4) -> dict:
         stat_signal = self.statistics.predict(prices)
-        sentiment = self.subjectivity.sentiment_score(news_text)
+        subj = self.subjectivity.analyze(news_text, ticker=symbol)
+        sentiment = subj.get("sentiment_score", 0.0)
         regime = self._market_regime(prices)
 
         if regime == "bull":
@@ -56,8 +57,10 @@ class ReasoningAgent:
             "blended_score": blended_score,
             "stat_score": stat_score,
             "sentiment": sentiment,
+            "sentiment_reason": subj.get("reasoning", ""),
             "regime": regime,
             "approved": approve,
             "risk_reason": risk_reason,
             "guidelines": guidelines,
+            "reason": f"regime={regime}, w_stat={w_stat}, w_subj={w_subj}, guidelines={guidelines or 'N/A'}",
         }

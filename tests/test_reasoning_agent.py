@@ -18,6 +18,9 @@ class StubSubjectivity(SubjectivityAgent):
         super().__init__()
         self.fixed_score = fixed_score
 
+    def analyze(self, news_text: str, ticker: str | None = None):
+        return {"sentiment_score": self.fixed_score, "reasoning": "stubbed"}
+
     def sentiment_score(self, text: str) -> float:  # pragma: no cover - deterministic override
         return self.fixed_score
 
