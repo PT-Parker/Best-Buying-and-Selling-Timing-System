@@ -21,10 +21,20 @@ class SubjectivityAgent:
     llm_client: Any = None
     positive_words: tuple = ("beat", "growth", "surge", "bull", "upgrade")
     negative_words: tuple = ("miss", "decline", "drop", "bear", "downgrade")
+    ticker_aliases: Dict[str, List[str]] = None
+
+    def __post_init__(self):
+        self.ticker_aliases = self.ticker_aliases or {
+            "2330.TW": ["台積電", "TSMC", "2330"],
+            "0050.TW": ["台灣50", "0050", "台灣大盤ETF"],
+            "BTC": ["bitcoin", "BTC"],
+            "ETH": ["ethereum", "ETH"],
+        }
 
     def fetch_headlines(self, ticker: str | None = None, limit: int = 5) -> str:
         """Fetch headlines from CryptoPanic or GNews if configured; fallback to mock text."""
-        queries = [q for q in [ticker, "crypto", "market"] if q]
+        aliases = self.ticker_aliases.get(ticker or "", []) if self.ticker_aliases else []
+        queries = [q for q in [ticker, *aliases, "crypto", "market"] if q]
 
         # Try CryptoPanic if token present
         cp_token = os.getenv("CRYPTOPANIC_API_KEY")
@@ -47,11 +57,12 @@ class SubjectivityAgent:
         # Try GNews if token present
         token = os.getenv("GNEWS_API_KEY")
         if token and requests:
-            q = queries[0] if queries else "market"
+            # Combine aliases to widen recall
+            q = " OR ".join(queries[:3]) if queries else "market"
             try:  # pragma: no cover - network path
                 resp = requests.get(
                     "https://gnews.io/api/v4/search",
-                    params={"q": q, "lang": "en", "max": limit, "token": token},
+                    params={"q": q, "lang": "zh,en", "max": limit, "token": token},
                     timeout=5,
                 )
                 if resp.ok:
