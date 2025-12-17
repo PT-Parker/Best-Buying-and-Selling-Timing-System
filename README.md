@@ -60,3 +60,4 @@ pytest
 - 每次訓練使用當前時間作為 random_state，結果會有隨機性；如需可重現，請自行固定 random_state。  
 - 待執行清單與日誌儲存在 session_state，重啟後需重新產生。  
 - 推送前請確保未包含任何敏感金鑰或憑證。  
+- 部署前請設定環境變數 `CRYPTOPANIC_API_KEY`/`GNEWS_API_KEY` 供情緒代理抓取真實新聞；未設定時將回退為模擬標題，不影響執行。
