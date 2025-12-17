@@ -23,8 +23,26 @@ class SubjectivityAgent:
     negative_words: tuple = ("miss", "decline", "drop", "bear", "downgrade")
 
     def fetch_headlines(self, ticker: str | None = None, limit: int = 5) -> str:
-        """Fetch headlines from GNews or CryptoPanic if configured; fallback to mock text."""
+        """Fetch headlines from CryptoPanic or GNews if configured; fallback to mock text."""
         queries = [q for q in [ticker, "crypto", "market"] if q]
+
+        # Try CryptoPanic if token present
+        cp_token = os.getenv("CRYPTOPANIC_API_KEY")
+        if cp_token and requests:
+            params = {"auth_token": cp_token, "public": "true"}
+            if ticker:
+                params["currencies"] = ticker
+            try:  # pragma: no cover - network path
+                resp = requests.get("https://cryptopanic.com/api/v1/posts/", params=params, timeout=5)
+                if resp.ok:
+                    data = resp.json()
+                    headlines = [
+                        (item.get("title") or item.get("slug") or "") for item in data.get("results", []) if item.get("title") or item.get("slug")
+                    ]
+                    if headlines:
+                        return " ".join(headlines[:limit])
+            except Exception:
+                pass
 
         # Try GNews if token present
         token = os.getenv("GNEWS_API_KEY")
