@@ -28,18 +28,26 @@ class ReasoningAgent:
         sma60 = close.rolling(60).mean().iloc[-1]
         return "bull" if sma20 > sma60 else "bear"
 
-    def decide(self, prices: pd.DataFrame, symbol: str, news_text: str = "", prob_threshold: float = 0.4) -> dict:
+    def decide(
+        self,
+        prices: pd.DataFrame,
+        symbol: str,
+        news_text: str = "",
+        prob_threshold: float = 0.4,
+        market_regime: str | None = None,
+    ) -> dict:
         stat_signal = self.statistics.predict(prices)
         subj = self.subjectivity.analyze(news_text, ticker=symbol)
         sentiment = subj.get("sentiment_score", 0.0)
-        regime = self._market_regime(prices)
+        regime = market_regime or self._market_regime(prices)
 
+        # Dynamic weighting aligned with spec: bear => stats >= 80%, bull => sentiment up to ~60%
         if regime == "bull":
-            w_subj, w_stat = 0.6, 0.4
+            w_subj, w_stat = 0.55, 0.45
         elif regime == "bear":
-            w_subj, w_stat = 0.3, 0.7
+            w_subj, w_stat = 0.15, 0.85
         else:
-            w_subj, w_stat = 0.5, 0.5
+            w_subj, w_stat = 0.4, 0.6
 
         stat_score = stat_signal.get("score") or 0.0
         blended_score = w_stat * stat_score + w_subj * ((sentiment + 1) / 2)
