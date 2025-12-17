@@ -22,6 +22,16 @@ def load_all(path: Path = DEFAULT_REGISTRY) -> List[Dict]:
         return [json.loads(line) for line in fh if line.strip()]
 
 
-def latest(path: Path = DEFAULT_REGISTRY) -> Optional[Dict]:
+def latest(path: Path = DEFAULT_REGISTRY, symbol: str | None = None) -> Optional[Dict]:
     entries = load_all(path)
-    return entries[-1] if entries else None
+    if not entries:
+        return None
+    if symbol is None:
+        return entries[-1]
+
+    symbol_norm = symbol.lower()
+    for entry in reversed(entries):
+        entry_symbol = str(entry.get("symbol", "")).lower()
+        if entry_symbol == symbol_norm:
+            return entry
+    return None

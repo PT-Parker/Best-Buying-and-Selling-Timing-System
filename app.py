@@ -27,6 +27,9 @@ def _ensure_state():
     st.session_state.setdefault("pending_orders", [])
     st.session_state.setdefault("op_logs", [])
     st.session_state.setdefault("last_refresh_ts", None)
+    st.session_state.setdefault("model_ctx_map", {})
+    if "model_ctx" in st.session_state and not isinstance(st.session_state.get("model_ctx"), dict):
+        st.session_state.pop("model_ctx", None)
 
 
 def _init_configs() -> Tuple[StrategyConfig, FeesConfig]:
@@ -274,8 +277,13 @@ def _render_validation_chart(prices: pd.DataFrame, trades: pd.DataFrame, title: 
     st.plotly_chart(fig, width="stretch")
 
 
-def _load_latest_model():
-    latest = registry.latest()
+def _model_path_for_symbol(symbol: str) -> Path:
+    safe_symbol = symbol.lower().replace(".", "_").replace("-", "_")
+    return Path("models") / f"model_{safe_symbol}.json"
+
+
+def _load_latest_model(symbol: str | None = None):
+    latest = registry.latest(symbol=symbol)
     if not latest:
         return None
     model_path = latest.get("model_path")
@@ -284,6 +292,24 @@ def _load_latest_model():
         return None
     booster = core_inference.load_booster(model_path)
     return booster, feature_cols
+
+
+def _get_model_ctx(symbol: str, prob_threshold: float) -> signal_service.ModelContext | None:
+    cache: dict = st.session_state.setdefault("model_ctx_map", {})
+    ctx = cache.get(symbol)
+    if ctx is None:
+        latest_model = _load_latest_model(symbol)
+        if latest_model:
+            booster, feature_cols = latest_model
+            ctx = signal_service.ModelContext(
+                booster=booster,
+                feature_columns=feature_cols,
+                threshold=prob_threshold,
+            )
+            cache[symbol] = ctx
+    if ctx is not None:
+        ctx.threshold = prob_threshold
+    return ctx
 
 
 def _forecast_price_with_model(
@@ -363,7 +389,7 @@ def _add_pending_order(symbol: str, price: float, tp: float, sl: float, shares: 
 
 def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: StrategyConfig, fees: FeesConfig, prob_threshold: float):
     st.subheader("模型版本 / 績效")
-    latest = registry.latest()
+    latest = registry.latest(symbol=symbol)
     if latest:
         metrics = latest.get("metrics", {})
         st.write(
@@ -377,8 +403,10 @@ def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: Stra
     train_col1, train_col2 = st.columns([1, 3])
     trigger_train = train_col1.button("以目前資料重新訓練模型")
     progress_bar = train_col2.empty()
+    model_cache = st.session_state.setdefault("model_ctx_map", {})
     if trigger_train:
         try:
+            model_cache.pop(symbol, None)
             progress_bar = progress_bar.progress(5, text="初始化模型訓練...")
             (
                 artifacts,
@@ -394,9 +422,9 @@ def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: Stra
                 prob_threshold,
                 validation_days=st.session_state.get("validation_days_selected", 120),
                 validation_end=st.session_state.get("validation_end_selected", date.today()),
+                model_output=_model_path_for_symbol(symbol),
             )
             progress_bar.progress(35, text="訓練完成，寫入 registry...")
-            st.session_state.pop("model_ctx", None)
             registry.append(
                 {
                     "model_path": str(artifacts.model_path),
@@ -411,7 +439,7 @@ def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: Stra
                 }
             )
             if artifacts.model is not None:
-                st.session_state["model_ctx"] = signal_service.ModelContext(
+                model_cache[symbol] = signal_service.ModelContext(
                     booster=artifacts.model.get_booster(),
                     feature_columns=artifacts.feature_columns,
                     threshold=prob_threshold,
@@ -507,6 +535,7 @@ def _train_model_with_windows(
     prob_threshold: float,
     validation_days: int,
     validation_end: date,
+    model_output: Path | None = None,
 ):
     validation_end = validation_end or date.today()
     validation_start = validation_end - timedelta(days=validation_days)
@@ -530,6 +559,7 @@ def _train_model_with_windows(
         train_features,
         label_config=label_cfg,
         hyperparameters={"random_state": rand_seed},
+        output_path=model_output or _model_path_for_symbol(symbol),
     )
 
     validation_prices = data_source.load_price_history(
@@ -641,21 +671,15 @@ def main():
 
     _render_model_section(symbol, data_mode, strategy, fees_cfg, prob_threshold)
 
-    model_ctx = st.session_state.get("model_ctx")
-    if model_ctx is None:
-        latest_model = _load_latest_model()
-        if latest_model:
-            booster, feature_cols = latest_model
-            model_ctx = signal_service.ModelContext(booster=booster, feature_columns=feature_cols, threshold=prob_threshold)
-            st.session_state["model_ctx"] = model_ctx
+    model_ctx = _get_model_ctx(symbol, prob_threshold)
 
     if st.button("生成價格預測"):
         try:
-            ctx = model_ctx or _load_latest_model()
-            if not ctx:
+            ctx = _get_model_ctx(symbol, prob_threshold)
+            if ctx is None:
                 st.error("尚未有訓練好的模型，請先重新訓練。")
             else:
-                booster, feature_cols = ctx if isinstance(ctx, tuple) else (ctx.booster, ctx.feature_columns)
+                booster, feature_cols = ctx.booster, ctx.feature_columns
                 forecast_df = _forecast_price_with_model(
                     price_history,
                     forecast_days,
