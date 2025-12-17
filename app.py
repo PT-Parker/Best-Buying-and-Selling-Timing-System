@@ -15,6 +15,15 @@ from core.backtest import FeesConfig, StrategyConfig
 from core.features import FeatureConfig, build_features
 from core import inference as core_inference
 from core import labeling
+from agents import (
+    Orchestrator,
+    ReasoningAgent,
+    ReflectionAgent,
+    RiskAgent,
+    StatisticsAgent,
+    SubjectivityAgent,
+)
+from services.memory_db import MemoryDB
 from services import backtest as backtest_service
 from services import data_source, registry, signals as signal_service
 from services.data_source import DataSourceMode
@@ -310,6 +319,20 @@ def _get_model_ctx(symbol: str, prob_threshold: float) -> signal_service.ModelCo
     if ctx is not None:
         ctx.threshold = prob_threshold
     return ctx
+
+
+def _build_orchestrator(symbol: str, prob_threshold: float) -> Orchestrator | None:
+    latest = _load_latest_model(symbol)
+    if not latest:
+        return None
+    booster, feature_cols = latest
+    stats = StatisticsAgent(booster=booster, feature_columns=feature_cols)
+    risk = RiskAgent()
+    subj = SubjectivityAgent()
+    db = MemoryDB()
+    reflection = ReflectionAgent(db=db)
+    reasoning = ReasoningAgent(statistics=stats, risk=risk, subjectivity=subj, reflection=reflection)
+    return Orchestrator(reasoning=reasoning)
 
 
 def _forecast_price_with_model(
@@ -668,6 +691,34 @@ def main():
     st.session_state["validation_end_selected"] = validation_end_date
 
     price_history = data_source.load_price_history([symbol], start_str, end_str, mode=data_mode)
+    use_agents = st.checkbox("使用多代理決策 (Beta)", value=False)
+    news_text = ""
+    agent_decision = None
+    if use_agents:
+        news_text = st.text_area("輸入新聞/情緒文本（-1~1 情緒分數）", "", height=120)
+        orchestrator = _build_orchestrator(symbol, prob_threshold)
+        if orchestrator is None:
+            st.info("尚未有對應標的的模型，無法啟動多代理決策。")
+        else:
+            with st.spinner("多代理決策計算中..."):
+                agent_payload = orchestrator.run_decision(
+                    symbol=symbol,
+                    start=start_str,
+                    end=end_str,
+                    news_text=news_text,
+                    mode=data_mode,
+                    prob_threshold=prob_threshold,
+                )
+                agent_decision = agent_payload.get("decision")
+            if agent_decision:
+                cols = st.columns(4)
+                cols[0].metric("動作", agent_decision.get("action", "hold"))
+                cols[1].metric("綜合分數", f"{agent_decision.get('blended_score', 0):.2f}")
+                cols[2].metric("模型分數", f"{agent_decision.get('stat_score', 0):.2f}")
+                cols[3].metric("情緒分數", f"{agent_decision.get('sentiment', 0):.2f}")
+                st.caption(f"Regime: {agent_decision.get('regime')} ｜ Risk: {agent_decision.get('risk_reason')}")
+                if agent_decision.get("guidelines"):
+                    st.info(f"Reflection 指南：{agent_decision['guidelines']}")
 
     _render_model_section(symbol, data_mode, strategy, fees_cfg, prob_threshold)
 

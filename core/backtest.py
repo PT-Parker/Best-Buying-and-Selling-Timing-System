@@ -229,3 +229,27 @@ def _compute_metrics(timeseries: pd.DataFrame, trades: pd.DataFrame, fees: FeesC
         "signal_count": int(timeseries["signal"].isin(["BUY", "SELL"]).sum()),
         "win_rate": win_rate,
     }
+
+
+class BacktestTool:
+    """Isolated backtest utility that returns strict JSON metrics for LLM consumers."""
+
+    def run(self, signals: pd.Series, prices: pd.Series) -> Dict[str, object]:
+        if signals is None or prices is None:
+            raise ValueError("signals and prices are required")
+        if len(signals) != len(prices):
+            raise ValueError("signals and prices must be aligned")
+
+        # Signals assumed numeric: 1 for long, 0 for flat
+        returns = prices.pct_change().fillna(0)
+        strat_ret = signals.shift().fillna(0) * returns
+        equity_curve = (1 + strat_ret).cumprod()
+
+        max_dd = ((equity_curve.cummax() - equity_curve) / equity_curve.cummax().clip(lower=1e-9)).max()
+        sharpe = np.sqrt(252) * strat_ret.mean() / (strat_ret.std() + 1e-9)
+
+        return {
+            "equity_curve": equity_curve.tolist(),
+            "sharpe": float(sharpe),
+            "max_drawdown": float(max_dd),
+        }
