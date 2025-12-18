@@ -41,7 +41,7 @@ def _price_series(trend: float) -> pd.DataFrame:
 def test_reasoning_selects_active_role():
     prices = _price_series(trend=0.5)
     llm = FakeLLM(
-        scores={"bull_score": 80, "bear_score": 10, "neutral_score": 20},
+        scores={"bull_score": 80, "bear_score": 10, "neutral_score": 20, "reasoning": "trend strong"},
         decision={"signal": "BUY", "confidence": 0.7, "reasoning": "breakout", "active_role": "bull"},
     )
     agent = ReasoningAgent(
@@ -50,10 +50,11 @@ def test_reasoning_selects_active_role():
         reflection=None,
         llm_client=llm,
     )
-    decision = agent.decide(prices, symbol="TEST")
+    decision = agent.decide(prices, symbol="TEST", time_summary="過去5日價格緩步上行。")
     assert decision["active_role"] == "bull"
     assert decision["action"] == "buy"
     assert decision["confidence"] == 0.7
+    assert decision["score_reasoning"] == "trend strong"
 
 
 def test_reasoning_risk_override():
@@ -63,7 +64,7 @@ def test_reasoning_risk_override():
 
     prices = _price_series(trend=0.5)
     llm = FakeLLM(
-        scores={"bull_score": 70, "bear_score": 20, "neutral_score": 10},
+        scores={"bull_score": 70, "bear_score": 20, "neutral_score": 10, "reasoning": "momentum"},
         decision={"signal": "BUY", "confidence": 0.8, "reasoning": "breakout", "active_role": "bull"},
     )
     agent = ReasoningAgent(
@@ -72,5 +73,5 @@ def test_reasoning_risk_override():
         reflection=None,
         llm_client=llm,
     )
-    decision = agent.decide(prices, symbol="TEST")
+    decision = agent.decide(prices, symbol="TEST", time_summary="過去5日價格緩步上行。")
     assert decision["action"] == "hold"

@@ -78,8 +78,9 @@ class ReasoningAgent:
             "stat_score": float(stat_score),
         }
 
-    def _score_experts(self, market_data: Dict[str, Any], stat_score: float) -> Dict[str, int]:
+    def _score_experts(self, market_data: Dict[str, Any], stat_score: float, time_summary: str) -> Dict[str, Any]:
         prompt = EXPERT_SCORING_PROMPT.format(
+            time_summary=time_summary,
             market_data=json.dumps(market_data, ensure_ascii=False),
             model_score=f"{stat_score:.4f}",
         )
@@ -92,23 +93,28 @@ class ReasoningAgent:
             "bull_score": int(llm_scores["bull_score"]),
             "bear_score": int(llm_scores["bear_score"]),
             "neutral_score": int(llm_scores["neutral_score"]),
+            "reasoning": str(llm_scores.get("reasoning", "")).strip(),
         }
 
     def _pick_active_role(self, scores: Dict[str, int]) -> str:
-        return max(scores.items(), key=lambda kv: kv[1])[0].replace("_score", "")
+        numeric_scores = {k: v for k, v in scores.items() if k.endswith("_score")}
+        return max(numeric_scores.items(), key=lambda kv: kv[1])[0].replace("_score", "")
 
-    def decide(self, market_data: pd.DataFrame, symbol: str) -> dict:
+    def decide(self, market_data: pd.DataFrame, symbol: str, time_summary: str | None = None) -> dict:
         stat_signal = self.statistics.predict(market_data)
         stat_score = float(stat_signal.get("score") or 0.0)
         approve, risk_reason = self.risk.approve_trade(stat_signal, market_data)
         guidelines = self.reflection.reflect_on_last_trade() if self.reflection else ""
 
+        summary = time_summary or "近期資料不足，無法產生時間敘述。"
         snapshot = self._market_snapshot(market_data, stat_score, symbol)
-        scores = self._score_experts(snapshot, stat_score)
+        scores = self._score_experts(snapshot, stat_score, summary)
         active_role = self._pick_active_role(scores)
+        score_reasoning = scores.get("reasoning") or ""
 
         decision_prompt = EXPERT_DECISION_PROMPT.format(
             active_role=active_role,
+            time_summary=summary,
             market_data=json.dumps(snapshot, ensure_ascii=False),
             model_score=f"{stat_score:.4f}",
             guidelines=guidelines or "N/A",
@@ -139,6 +145,7 @@ class ReasoningAgent:
             "reasoning": reasoning or f"active_role={active_role}, scores={scores}",
             "active_role": active_role,
             "expert_scores": scores,
+            "score_reasoning": score_reasoning,
             "stat_score": stat_score,
             "approved": approve,
             "risk_reason": risk_reason,

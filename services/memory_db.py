@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS trade_history (
     actual_profit REAL,
     actual_outcome TEXT
 );
+
+CREATE TABLE IF NOT EXISTS llm_explanations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    symbol TEXT,
+    context TEXT,
+    payload TEXT,
+    explanation TEXT
+);
 """
 
 
@@ -93,6 +102,31 @@ class MemoryDB:
                 ),
             )
 
+    def insert_explanation(
+        self,
+        symbol: str,
+        context: str,
+        payload: Dict[str, Any],
+        explanation: str,
+        timestamp: str | None = None,
+    ) -> None:
+        """Insert a new LLM explanation with context metadata."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO llm_explanations
+                (timestamp, symbol, context, payload, explanation)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    timestamp or datetime.datetime.utcnow().isoformat() + "Z",
+                    symbol,
+                    context,
+                    json.dumps(payload, ensure_ascii=False),
+                    explanation,
+                ),
+            )
+
     def update_last_trade_profit(self, actual_price: float) -> None:
         """Update the most recent trade with realized/mark-to-market profit if missing."""
         with self._connect() as conn:
@@ -129,5 +163,13 @@ class MemoryDB:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM trade_history ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_recent_explanations(self, limit: int = 10) -> list[Dict[str, Any]]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM llm_explanations ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]

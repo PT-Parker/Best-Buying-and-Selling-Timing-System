@@ -14,11 +14,11 @@ import google.generativeai as genai
 
 class GeminiClient:
     def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.5-flash-lite"):
-        key = api_key or os.getenv("GOOGLE_API_KEY")
+        key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not key and st is not None:
-            key = st.secrets.get("GOOGLE_API_KEY")  # type: ignore[attr-defined]
+            key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY")  # type: ignore[attr-defined]
         if not key:
-            raise ValueError("Google API Key not found.")
+            raise ValueError("Gemini API Key not found (GEMINI_API_KEY).")
 
         genai.configure(api_key=key)
         self.model_name = model_name

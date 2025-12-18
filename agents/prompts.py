@@ -14,7 +14,10 @@ EXPERT_SCORING_PROMPT = """
 2) 波動率 (Volatility)：窄幅盤整後長黑/長紅 => 強烈情緒傾向。
 3) 價格型態：識別假突破、吸籌或派發等模式。
 
-輸入數據:
+時間敘述 (最近幾日):
+{time_summary}
+
+技術數據:
 {market_data}
 
 請輸出 JSON（只回傳 JSON）:
@@ -22,12 +25,15 @@ EXPERT_SCORING_PROMPT = """
   "bull_score": 0-100,
   "bear_score": 0-100,
   "neutral_score": 0-100,
-  "reasoning": "簡短的一句話解釋"
+  "reasoning": "以第一人稱說明最高分角色為何勝出，例如：『我看到...所以得分最高』"
 }}
 """
 
 EXPERT_DECISION_PROMPT = """
-你是 {active_role} 專家，你的策略得分最高。請根據技術數據做出最終交易信號並反駁其他觀點。
+你是 {active_role} 專家，你的策略得分最高。請根據技術數據與時間敘述做出最終交易信號並反駁其他觀點。
+
+時間敘述:
+{time_summary}
 
 技術數據:
 {market_data}
@@ -38,11 +44,57 @@ EXPERT_DECISION_PROMPT = """
 反思指引:
 {guidelines}
 
+信心校準規則:
+- 指標與時間敘述高度一致、共振明確時，confidence 才可 > 0.8。
+- 訊號衝突或背離明顯時，confidence 應 < 0.6。
+- 其餘情況落在 0.6-0.8 之間。
+
 請輸出 JSON（只回傳 JSON）:
 {{
   "signal": "BUY" | "SELL" | "HOLD",
   "confidence": float,
   "reasoning": "簡短說明，包含反駁其他觀點",
   "active_role": "{active_role}"
+}}
+"""
+
+DECISION_EXPLANATION_PROMPT = """
+你是交易助理，請根據提供的數據，用中文產生 2-3 行解釋。
+重點：只使用提供的數據，不要臆測新聞或事件，不要重新計算。
+
+輸入資料:
+- 標的: {symbol}
+- 日期: {as_of}
+- 收盤價: {close}
+- 模型分數: {model_score}
+- 期望報酬: {expected_return}
+- 技術訊號: {signal}
+- 建議動作: {action}
+- 策略原因: {reason}
+- 停利價: {take_profit}
+- 停損價: {stop_loss}
+- 預估持有天數: {horizon_days}
+
+請輸出 JSON（只回傳 JSON）:
+{{
+  "explanation": "請用 2-3 行說明，每行用換行分隔"
+}}
+"""
+
+FORECAST_EXPLANATION_PROMPT = """
+你是交易助理，請根據提供的預測資料，用中文產生 2-3 行解釋。
+重點：只使用提供的數據，不要臆測新聞或事件。
+
+輸入資料:
+- 標的: {symbol}
+- 最新收盤價: {last_price}
+- 預測天數: {forecast_days}
+- 預測終點價格: {forecast_price}
+- 模型分數: {model_score}
+- 期望日報酬估計: {expected_return}
+
+請輸出 JSON（只回傳 JSON）:
+{{
+  "explanation": "請用 2-3 行說明，每行用換行分隔"
 }}
 """

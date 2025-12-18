@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import json
 import os
 from pathlib import Path
 from typing import Sequence, Tuple
@@ -23,6 +24,7 @@ from agents import (
     RiskAgent,
     StatisticsAgent,
 )
+from agents.prompts import DECISION_EXPLANATION_PROMPT, FORECAST_EXPLANATION_PROMPT
 from services.memory_db import MemoryDB
 from services import backtest as backtest_service
 from services import data_source, registry, signals as signal_service
@@ -37,15 +39,80 @@ def _ensure_state():
     st.session_state.setdefault("op_logs", [])
     st.session_state.setdefault("last_refresh_ts", None)
     st.session_state.setdefault("model_ctx_map", {})
+    st.session_state.setdefault("llm_explain_cache", {})
+    st.session_state.setdefault("gemini_client_error", None)
+    st.session_state.setdefault("gemini_api_key", "")
+    st.session_state.setdefault("gemini_api_active", False)
+    st.session_state.setdefault("agent_decision_cached", None)
+    st.session_state.setdefault("decision_card_visible", False)
+    st.session_state.setdefault("decision_card_signature", None)
     if "model_ctx" in st.session_state and not isinstance(st.session_state.get("model_ctx"), dict):
         st.session_state.pop("model_ctx", None)
 
 
 def check_llm_status() -> tuple[bool, str]:
-    api_key = os.getenv("GOOGLE_API_KEY")
+    session_key = st.session_state.get("gemini_api_key") if st.session_state.get("gemini_api_active") else None
+    api_key = session_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        return False, "🔴 LLM 離線 (未偵測到 API Key)"
+        return False, "🔴 LLM 離線 (未偵測到 GEMINI_API_KEY)"
+    if session_key:
+        return True, "🟢 LLM 連線中 (Session GEMINI_API_KEY)"
     return True, "🟢 LLM 連線中 (Gemini 2.5 Flash-Lite)"
+
+
+def _get_llm_client():
+    cached = st.session_state.get("gemini_client")
+    if cached is not None:
+        return cached
+    if not st.session_state.get("gemini_api_active"):
+        return None
+    if st.session_state.get("gemini_client_error"):
+        return None
+    try:
+        from utils.llm_client import GeminiClient
+
+        session_key = st.session_state.get("gemini_api_key") if st.session_state.get("gemini_api_active") else None
+        client = GeminiClient(api_key=session_key)
+    except Exception as exc:  # pragma: no cover - UI error path
+        st.session_state["gemini_client_error"] = str(exc)
+        return None
+    st.session_state["gemini_client"] = client
+    return client
+
+
+def _fetch_llm_explanation(
+    prompt: str,
+    cache_key: str,
+    symbol: str,
+    context: str,
+    payload: dict,
+    db: MemoryDB | None,
+    llm_client=None,
+    force: bool = False,
+):
+    cache = st.session_state.setdefault("llm_explain_cache", {})
+    if cache_key in cache and not force:
+        return cache[cache_key], None
+    client = llm_client or _get_llm_client()
+    if client is None:
+        return None, "LLM 離線 (未偵測到 API Key)"
+    try:
+        raw = client.chat(prompt, json_mode=True)
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        explanation = str(data.get("explanation", "")).strip()
+        if not explanation:
+            return None, "Gemini 回傳空內容"
+        cache[cache_key] = explanation
+        if db is not None:
+            db.insert_explanation(
+                symbol=symbol,
+                context=context,
+                payload=payload,
+                explanation=explanation,
+            )
+        return explanation, None
+    except Exception as exc:  # pragma: no cover - UI error path
+        return None, f"Gemini 解析失敗：{exc}"
 
 
 def _init_configs() -> Tuple[StrategyConfig, FeesConfig]:
@@ -98,7 +165,15 @@ def _load_signal_summary(
         return {"rows": [], "metadata": {"anomalies": []}}
 
 
-def _render_signal_section(summary: dict, strategy: StrategyConfig, prob_threshold: float, label_cfg: labeling.LabelConfig, fees: FeesConfig):
+def _render_signal_section(
+    summary: dict,
+    strategy: StrategyConfig,
+    prob_threshold: float,
+    label_cfg: labeling.LabelConfig,
+    fees: FeesConfig,
+    llm_client=None,
+    db: MemoryDB | None = None,
+):
     st.subheader("今日決策卡")
     rows = summary.get("rows") or []
     anomalies = summary.get("metadata", {}).get("anomalies") or []
@@ -166,6 +241,59 @@ def _render_signal_section(summary: dict, strategy: StrategyConfig, prob_thresho
                 score=score_val,
                 expected_return=expected_return,
             )
+    with st.expander("Gemini 解讀"):
+        generate_key = f"generate_decision_explain_{row.get('as_of', '')}"
+        should_generate = st.button("生成 Gemini 解讀", key=generate_key)
+        if score is None:
+            st.info("尚未有模型分數，略過 Gemini 解讀。")
+        else:
+            symbol = row.get("symbol", "")
+            as_of = row.get("as_of", "N/A")
+            payload = {
+                "symbol": symbol,
+                "as_of": as_of,
+                "close": price,
+                "model_score": score_val,
+                "expected_return": expected_return,
+                "signal": signal,
+                "action": action,
+                "reason": row.get("reason"),
+                "take_profit": tp_px,
+                "stop_loss": sl_px,
+                "horizon_days": label_cfg.horizon_days,
+            }
+            cache_key = f"decision|{symbol}|{as_of}|{score_val:.4f}|{expected_return:.4f}|{action}"
+            explanation = st.session_state.get("llm_explain_cache", {}).get(cache_key)
+            if should_generate:
+                prompt = DECISION_EXPLANATION_PROMPT.format(
+                    symbol=symbol,
+                    as_of=as_of,
+                    close=f"{price:.2f}",
+                    model_score=f"{score_val:.4f}",
+                    expected_return=f"{expected_return:.2%}",
+                    signal=signal or "N/A",
+                    action=action,
+                    reason=row.get("reason", ""),
+                    take_profit=f"{tp_px:.2f}",
+                    stop_loss=f"{sl_px:.2f}",
+                    horizon_days=label_cfg.horizon_days,
+                )
+                explanation, error = _fetch_llm_explanation(
+                    prompt=prompt,
+                    cache_key=cache_key,
+                    symbol=symbol,
+                    context="decision_card",
+                    payload=payload,
+                    db=db,
+                    llm_client=llm_client,
+                    force=True,
+                )
+                if error:
+                    st.info(error)
+            if explanation:
+                st.markdown(explanation.replace("\n", "  \n"))
+            else:
+                st.info("尚未生成 Gemini 解讀。")
 
 
 def _render_backtest_section(result: backtest_service.BacktestResult, title: str = "回測績效", initial_capital: float | None = None):
@@ -328,20 +456,23 @@ def _get_model_ctx(symbol: str, prob_threshold: float) -> signal_service.ModelCo
     return ctx
 
 
-def _build_orchestrator(symbol: str, prob_threshold: float) -> Orchestrator | None:
+def _build_orchestrator(symbol: str, prob_threshold: float, db: MemoryDB | None = None) -> Orchestrator | None:
     latest = _load_latest_model(symbol)
     if not latest:
         return None
     booster, feature_cols = latest
     stats = StatisticsAgent(booster=booster, feature_columns=feature_cols)
     risk = RiskAgent()
-    db = MemoryDB()
+    db = db or MemoryDB()
     reflection = ReflectionAgent(db=db)
     from utils.llm_client import GeminiClient
 
-    llm_client = GeminiClient()
+    if not st.session_state.get("gemini_api_active"):
+        raise RuntimeError("Gemini 未啟動，請先在側邊欄輸入並啟動 GEMINI_API_KEY。")
+    session_key = st.session_state.get("gemini_api_key")
+    llm_client = GeminiClient(api_key=session_key)
     reasoning = ReasoningAgent(statistics=stats, risk=risk, reflection=reflection, llm_client=llm_client)
-    return Orchestrator(reasoning=reasoning)
+    return Orchestrator(reasoning=reasoning, db=db)
 
 
 def _forecast_price_with_model(
@@ -388,7 +519,7 @@ def _forecast_price_with_model(
     for dt in future_dates:
         price *= 1 + expected_return
         forecasts.append({"date": dt, "forecast_price": price})
-    return pd.DataFrame(forecasts)
+    return pd.DataFrame(forecasts), prob, expected_return
 
 
 def _log_event(event: str, detail: dict):
@@ -485,6 +616,7 @@ def _render_model_section(symbol: str, data_mode: DataSourceMode, strategy: Stra
             st.success(
                 f"模型已重新訓練並寫入 registry。訓練期間 {windows['train']}, 驗證期間 {windows['validation']}。"
             )
+            st.info("模型已更新，請按「更新行情並生成今日決策卡」。")
             st.write("訓練指標", artifacts.metrics)
             if validation_metrics:
                 st.write("驗證指標", validation_metrics)
@@ -660,9 +792,32 @@ def main():
     st.title("股市進出場時機系統")
     st.caption("資料 → 特徵 → 推論/回測 → 訊號 → 視覺化（更新行情後生成決策卡）")
 
-    llm_active, status_msg = check_llm_status()
     st.sidebar.title("系統狀態")
+    with st.sidebar.expander("Gemini API 設定", expanded=False):
+        st.text_input(
+            "GEMINI_API_KEY",
+            type="password",
+            key="gemini_api_key",
+            placeholder="貼上你的 Gemini API Key",
+        )
+        if st.button("啟動 Gemini", key="activate_gemini"):
+            if st.session_state.get("gemini_api_key"):
+                st.session_state["gemini_api_active"] = True
+                st.session_state["gemini_client"] = None
+                st.session_state["gemini_client_error"] = None
+                st.success("Gemini 已啟動（僅限本次 Session）。")
+            else:
+                st.error("請先輸入 GEMINI_API_KEY。")
+        if st.session_state.get("gemini_api_active"):
+            if st.button("停止 Gemini", key="deactivate_gemini"):
+                st.session_state["gemini_api_active"] = False
+                st.session_state["gemini_client"] = None
+                st.session_state["gemini_client_error"] = None
+                st.success("Gemini 已停止。")
+    llm_active, status_msg = check_llm_status()
     st.sidebar.markdown(f"**AI 核心:** {status_msg}")
+    memory_db = MemoryDB()
+    llm_client = _get_llm_client()
 
     end_default = date.today()
     start_default = end_default - timedelta(days=365)
@@ -708,9 +863,15 @@ def main():
     agent_decision = None
     if use_agents:
         if not llm_active:
-            st.error("⚠️ 此功能需要 Gemini API Key 才能執行「專家辯論」模式。請在 .env 或 Secrets 設定 GOOGLE_API_KEY。")
+            st.error("⚠️ 此功能需要 Gemini API Key 才能執行「專家辯論」模式。請在 .env 或 Secrets 設定 GEMINI_API_KEY。")
             st.stop()
-        orchestrator = _build_orchestrator(symbol, prob_threshold)
+        run_agents = st.button("執行多代理推理")
+        if not run_agents and st.session_state.get("agent_decision_cached"):
+            agent_decision = st.session_state.get("agent_decision_cached")
+        if not run_agents and agent_decision is None:
+            st.info("尚未執行多代理推理。")
+            st.stop()
+        orchestrator = _build_orchestrator(symbol, prob_threshold, db=memory_db)
         if orchestrator is None:
             st.info("尚未有對應標的的模型，無法啟動多代理決策。")
         else:
@@ -723,16 +884,31 @@ def main():
                         mode=data_mode,
                     )
                     agent_decision = agent_payload.get("decision")
+                    st.session_state["agent_decision_cached"] = agent_decision
                 except Exception as exc:
                     st.error(f"Gemini 推理失敗：{exc}")
                     agent_decision = None
             if agent_decision:
+                role_map = {"bull": "多頭", "bear": "空頭", "neutral": "中立"}
+                active_role = agent_decision.get("active_role", "neutral")
+                role_label = role_map.get(active_role, active_role)
                 cols = st.columns(4)
                 cols[0].metric("動作", agent_decision.get("action", "hold"))
                 cols[1].metric("信心分數", f"{agent_decision.get('confidence', 0):.2f}")
                 cols[2].metric("模型分數", f"{agent_decision.get('stat_score', 0):.2f}")
-                cols[3].metric("專家角色", agent_decision.get("active_role", "neutral"))
-                st.caption(f"Risk: {agent_decision.get('risk_reason')} ｜ Scores: {agent_decision.get('expert_scores')}")
+                cols[3].metric("專家角色", role_label)
+                scores = agent_decision.get("expert_scores") or {}
+                bull_score = scores.get("bull_score")
+                bear_score = scores.get("bear_score")
+                neutral_score = scores.get("neutral_score")
+                st.caption(f"Risk: {agent_decision.get('risk_reason')}")
+                st.markdown(
+                    f"**🧑‍💼 多頭專家**：{bull_score if bull_score is not None else 'N/A'}  "
+                    f"**🐻 空頭專家**：{bear_score if bear_score is not None else 'N/A'}  "
+                    f"**⚖️ 中立專家**：{neutral_score if neutral_score is not None else 'N/A'}"
+                )
+                if agent_decision.get("score_reasoning"):
+                    st.markdown(f"**{role_label}專家發言：**{agent_decision['score_reasoning']}")
                 if agent_decision.get("guidelines"):
                     st.info(f"Reflection 指南：{agent_decision['guidelines']}")
 
@@ -747,7 +923,7 @@ def main():
                 st.error("尚未有訓練好的模型，請先重新訓練。")
             else:
                 booster, feature_cols = ctx.booster, ctx.feature_columns
-                forecast_df = _forecast_price_with_model(
+                forecast_df, forecast_prob, forecast_expected = _forecast_price_with_model(
                     price_history,
                     forecast_days,
                     booster,
@@ -755,7 +931,8 @@ def main():
                     data_source.load_label_config(),
                 )
                 st.subheader(f"未來 {forecast_days} 日價格預測")
-                st.metric("預測股價", f"{forecast_df['forecast_price'].iloc[-1]:,.2f}")
+                forecast_price = float(forecast_df["forecast_price"].iloc[-1])
+                st.metric("預測股價", f"{forecast_price:,.2f}")
                 fig = go.Figure(
                     go.Scatter(
                         x=forecast_df["date"],
@@ -786,6 +963,49 @@ def main():
                 )
                 st.plotly_chart(fig, width="stretch")
                 st.dataframe(forecast_df, hide_index=True, width="stretch")
+                with st.expander("Gemini 解讀"):
+                    generate_key = f"generate_forecast_explain_{symbol}_{forecast_days}"
+                    should_generate = st.button("生成 Gemini 解讀", key=generate_key)
+                    last_price = (
+                        float(price_history.sort_values("date")["close"].iloc[-1])
+                        if not price_history.empty
+                        else float("nan")
+                    )
+                    payload = {
+                        "symbol": symbol,
+                        "last_price": last_price,
+                        "forecast_days": forecast_days,
+                        "forecast_price": forecast_price,
+                        "model_score": float(forecast_prob),
+                        "expected_return": float(forecast_expected),
+                    }
+                    cache_key = f"forecast|{symbol}|{forecast_days}|{forecast_price:.2f}|{last_price:.2f}"
+                    explanation = st.session_state.get("llm_explain_cache", {}).get(cache_key)
+                    if should_generate:
+                        prompt = FORECAST_EXPLANATION_PROMPT.format(
+                            symbol=symbol,
+                            last_price=f"{last_price:.2f}",
+                            forecast_days=forecast_days,
+                            forecast_price=f"{forecast_price:.2f}",
+                            model_score=f"{forecast_prob:.4f}",
+                            expected_return=f"{forecast_expected:.4%}",
+                        )
+                        explanation, error = _fetch_llm_explanation(
+                            prompt=prompt,
+                            cache_key=cache_key,
+                            symbol=symbol,
+                            context="forecast",
+                            payload=payload,
+                            db=memory_db,
+                            llm_client=llm_client,
+                            force=True,
+                        )
+                        if error:
+                            st.info(error)
+                    if explanation:
+                        st.markdown(explanation.replace("\n", "  \n"))
+                    else:
+                        st.info("尚未生成 Gemini 解讀。")
         except Exception as exc:
             st.error(f"無法產生預測：{exc}")
 
@@ -794,18 +1014,29 @@ def main():
 
     decision_btn = st.button("更新行情並生成今日決策卡")
     summary = st.session_state.get("latest_decision_summary")
+    key_signature = f"{symbol}|{start_str}|{end_str}|{prob_threshold:.3f}"
+    if st.session_state.get("decision_card_signature") != key_signature:
+        st.session_state["decision_card_visible"] = False
+        st.session_state["decision_card_signature"] = key_signature
     if st.session_state.pop("decision_needs_refresh", False):
-        with st.spinner("套用最新模型並計算決策..."):
-            summary = _load_signal_summary(symbol, start_str, end_str, strategy, data_mode, model_ctx)
-            st.session_state["latest_decision_summary"] = summary
+        st.session_state["latest_decision_summary"] = None
+        st.session_state["decision_card_visible"] = False
+        summary = None
     if decision_btn:
         with st.spinner("計算決策..."):
             summary = _load_signal_summary(symbol, start_str, end_str, strategy, data_mode, model_ctx)
             st.session_state["latest_decision_summary"] = summary
-    if summary:
-        _render_signal_section(summary, strategy, prob_threshold, data_source.load_label_config(), fees_cfg)
-    else:
-        st.info("請先按「生成今日決策卡」。")
+            st.session_state["decision_card_visible"] = True
+    if st.session_state.get("decision_card_visible") and summary:
+        _render_signal_section(
+            summary,
+            strategy,
+            prob_threshold,
+            data_source.load_label_config(),
+            fees_cfg,
+            llm_client=llm_client,
+            db=memory_db,
+        )
 
     validation_bt = st.session_state.get("latest_validation_bt")
     validation_window = st.session_state.get("latest_validation_window")
