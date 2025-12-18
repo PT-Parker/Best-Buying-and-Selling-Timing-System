@@ -22,14 +22,14 @@ class ReasoningAgent:
 
     def _call_llm(self, prompt: str) -> Dict[str, Any] | None:
         if not self.llm_client:
-            return None
+            raise RuntimeError("Gemini client is required for expert reasoning.")
         try:
             response = self.llm_client.chat(prompt, json_mode=True)
             if not response:
-                return None
+                raise ValueError("Gemini returned empty response.")
             return json.loads(response) if isinstance(response, str) else response
         except Exception:
-            return None
+            raise
 
     def _market_snapshot(self, prices: pd.DataFrame, stat_score: float, symbol: str) -> Dict[str, Any]:
         if prices.empty:
@@ -47,6 +47,18 @@ class ReasoningAgent:
         bb_up = sma20 + 2 * bb_std if np.isfinite(sma20) and np.isfinite(bb_std) else float("nan")
         bb_lo = sma20 - 2 * bb_std if np.isfinite(sma20) and np.isfinite(bb_std) else float("nan")
         vol10 = close.pct_change().rolling(10).std().iloc[-1] if len(close) >= 10 else float("nan")
+        volume = prices["volume"].iloc[-1] if "volume" in prices else float("nan")
+        volume_ma20 = prices["volume"].rolling(20).mean().iloc[-1] if "volume" in prices and len(prices) >= 20 else float("nan")
+        atr = None
+        if {"high", "low", "close"}.issubset(prices.columns):
+            high = prices["high"].astype(float)
+            low = prices["low"].astype(float)
+            prev_close = close.shift()
+            tr = np.maximum(
+                high - low,
+                np.maximum((high - prev_close).abs(), (low - prev_close).abs()),
+            )
+            atr = tr.rolling(14).mean().iloc[-1] if len(tr) >= 14 else float("nan")
 
         return {
             "symbol": symbol,
@@ -57,7 +69,11 @@ class ReasoningAgent:
             "macd_hist": float(macd_hist.iloc[-1]) if len(macd_hist) else None,
             "bb_upper": float(bb_up) if np.isfinite(bb_up) else None,
             "bb_lower": float(bb_lo) if np.isfinite(bb_lo) else None,
+            "bb_width": float(bb_up - bb_lo) if np.isfinite(bb_up) and np.isfinite(bb_lo) else None,
             "volatility_10": float(vol10) if np.isfinite(vol10) else None,
+            "atr_14": float(atr) if atr is not None and np.isfinite(atr) else None,
+            "volume": float(volume) if np.isfinite(volume) else None,
+            "volume_ma20": float(volume_ma20) if np.isfinite(volume_ma20) else None,
             "recent_closes": close.tail(10).round(4).tolist(),
             "stat_score": float(stat_score),
         }
@@ -67,42 +83,15 @@ class ReasoningAgent:
             market_data=json.dumps(market_data, ensure_ascii=False),
             model_score=f"{stat_score:.4f}",
         )
-        llm_scores = self._call_llm(prompt) or {}
-        if {"bull_score", "bear_score", "neutral_score"}.issubset(llm_scores.keys()):
-            try:
-                return {
-                    "bull_score": int(llm_scores["bull_score"]),
-                    "bear_score": int(llm_scores["bear_score"]),
-                    "neutral_score": int(llm_scores["neutral_score"]),
-                }
-            except Exception:
-                pass
-
-        # Heuristic fallback when LLM is unavailable
-        bull = 50
-        bear = 50
-        neutral = 50
-        rsi = market_data.get("rsi_14")
-        macd_hist = market_data.get("macd_hist")
-        vol = market_data.get("volatility_10")
-        if rsi is not None:
-            if rsi > 70:
-                bear += 15
-                bull -= 10
-            elif rsi < 30:
-                bull += 15
-        if macd_hist is not None:
-            if macd_hist > 0:
-                bull += 10
-            else:
-                bear += 10
-        if vol is not None and vol > 0.02:
-            neutral += 10
-
+        llm_scores = self._call_llm(prompt)
+        if not llm_scores:
+            raise ValueError("Gemini scoring returned no data.")
+        if not {"bull_score", "bear_score", "neutral_score"}.issubset(llm_scores.keys()):
+            raise ValueError(f"Invalid scoring JSON: {llm_scores}")
         return {
-            "bull_score": int(max(0, min(100, bull))),
-            "bear_score": int(max(0, min(100, bear))),
-            "neutral_score": int(max(0, min(100, neutral))),
+            "bull_score": int(llm_scores["bull_score"]),
+            "bear_score": int(llm_scores["bear_score"]),
+            "neutral_score": int(llm_scores["neutral_score"]),
         }
 
     def _pick_active_role(self, scores: Dict[str, int]) -> str:
@@ -124,15 +113,17 @@ class ReasoningAgent:
             model_score=f"{stat_score:.4f}",
             guidelines=guidelines or "N/A",
         )
-        llm_decision = self._call_llm(decision_prompt) or {}
+        llm_decision = self._call_llm(decision_prompt)
+        if not llm_decision:
+            raise ValueError("Gemini decision returned no data.")
 
         signal = str(llm_decision.get("signal", "")).upper()
         confidence = llm_decision.get("confidence")
         reasoning = llm_decision.get("reasoning") or ""
         if signal not in {"BUY", "SELL", "HOLD"}:
-            signal = "BUY" if active_role == "bull" else ("SELL" if active_role == "bear" else "HOLD")
+            raise ValueError(f"Invalid decision JSON: {llm_decision}")
         if confidence is None:
-            confidence = max(scores.values()) / 100.0
+            raise ValueError(f"Missing confidence in decision JSON: {llm_decision}")
 
         if not approve:
             signal = "HOLD"

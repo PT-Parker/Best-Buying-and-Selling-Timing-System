@@ -9,6 +9,10 @@ EXPERT_SCORING_PROMPT = """
 即便沒有新聞，請從「價格行為 (Price Action)」推斷市場情緒：
 - 劇烈長紅/長黑 K 線 -> 隱含強烈情緒 (高 Bull/Bear 分數)。
 - 窄幅盤整 -> 隱含觀望情緒 (高 Neutral 分數)。
+雖然沒有外部新聞，請透過「市場微結構」推斷隱含情緒：
+1) 成交量 (Volume)：價漲量增 => Bullish；價跌量增 => Bearish。
+2) 波動率 (Volatility)：窄幅盤整後長黑/長紅 => 強烈情緒傾向。
+3) 價格型態：識別假突破、吸籌或派發等模式。
 
 輸入數據:
 {market_data}

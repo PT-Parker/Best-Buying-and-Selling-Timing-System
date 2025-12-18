@@ -23,13 +23,21 @@ class GeminiClient:
         genai.configure(api_key=key)
         self.model_name = model_name
 
-    def chat(self, prompt: str, json_mode: bool = True) -> str:
+    def chat(self, prompt: str, json_mode: bool = True, max_retries: int = 1) -> str:
         generation_config = {}
         if json_mode:
             generation_config["response_mime_type"] = "application/json"
         model = genai.GenerativeModel(model_name=self.model_name, generation_config=generation_config)
-        try:
-            response = model.generate_content(prompt)
-            return response.text
-        except Exception as exc:  # pragma: no cover - network error path
-            return json.dumps({"error": str(exc)})
+        attempts = 0
+        last_error: Exception | None = None
+        while attempts <= max_retries:
+            try:
+                response = model.generate_content(prompt)
+                text = response.text
+                if json_mode:
+                    json.loads(text)
+                return text
+            except Exception as exc:  # pragma: no cover - network error path
+                last_error = exc
+                attempts += 1
+        raise RuntimeError(f"Gemini API error: {last_error}")

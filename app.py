@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import os
 from pathlib import Path
 from typing import Sequence, Tuple
 
@@ -38,6 +39,13 @@ def _ensure_state():
     st.session_state.setdefault("model_ctx_map", {})
     if "model_ctx" in st.session_state and not isinstance(st.session_state.get("model_ctx"), dict):
         st.session_state.pop("model_ctx", None)
+
+
+def check_llm_status() -> tuple[bool, str]:
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        return False, "🔴 LLM 離線 (未偵測到 API Key)"
+    return True, "🟢 LLM 連線中 (Gemini 2.5 Flash-Lite)"
 
 
 def _init_configs() -> Tuple[StrategyConfig, FeesConfig]:
@@ -329,12 +337,9 @@ def _build_orchestrator(symbol: str, prob_threshold: float) -> Orchestrator | No
     risk = RiskAgent()
     db = MemoryDB()
     reflection = ReflectionAgent(db=db)
-    try:
-        from utils.llm_client import GeminiClient
+    from utils.llm_client import GeminiClient
 
-        llm_client = GeminiClient()
-    except Exception:
-        llm_client = None
+    llm_client = GeminiClient()
     reasoning = ReasoningAgent(statistics=stats, risk=risk, reflection=reflection, llm_client=llm_client)
     return Orchestrator(reasoning=reasoning)
 
@@ -655,6 +660,10 @@ def main():
     st.title("股市進出場時機系統")
     st.caption("資料 → 特徵 → 推論/回測 → 訊號 → 視覺化（更新行情後生成決策卡）")
 
+    llm_active, status_msg = check_llm_status()
+    st.sidebar.title("系統狀態")
+    st.sidebar.markdown(f"**AI 核心:** {status_msg}")
+
     end_default = date.today()
     start_default = end_default - timedelta(days=365)
     start_date, end_date = st.sidebar.date_input(
@@ -695,21 +704,28 @@ def main():
     st.session_state["validation_end_selected"] = validation_end_date
 
     price_history = data_source.load_price_history([symbol], start_str, end_str, mode=data_mode)
-    use_agents = st.checkbox("使用多代理決策 (Beta)", value=False)
+    use_agents = st.checkbox("使用多代理決策 (Beta)", value=False, disabled=not llm_active)
     agent_decision = None
     if use_agents:
+        if not llm_active:
+            st.error("⚠️ 此功能需要 Gemini API Key 才能執行「專家辯論」模式。請在 .env 或 Secrets 設定 GOOGLE_API_KEY。")
+            st.stop()
         orchestrator = _build_orchestrator(symbol, prob_threshold)
         if orchestrator is None:
             st.info("尚未有對應標的的模型，無法啟動多代理決策。")
         else:
             with st.spinner("多代理決策計算中..."):
-                agent_payload = orchestrator.run_decision(
-                    symbol=symbol,
-                    start=start_str,
-                    end=end_str,
-                    mode=data_mode,
-                )
-                agent_decision = agent_payload.get("decision")
+                try:
+                    agent_payload = orchestrator.run_decision(
+                        symbol=symbol,
+                        start=start_str,
+                        end=end_str,
+                        mode=data_mode,
+                    )
+                    agent_decision = agent_payload.get("decision")
+                except Exception as exc:
+                    st.error(f"Gemini 推理失敗：{exc}")
+                    agent_decision = None
             if agent_decision:
                 cols = st.columns(4)
                 cols[0].metric("動作", agent_decision.get("action", "hold"))
