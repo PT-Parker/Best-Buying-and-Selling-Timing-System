@@ -2,7 +2,6 @@ import pandas as pd
 
 from agents.reasoning_agent import ReasoningAgent
 from agents.risk_agent import RiskAgent
-from agents.subjectivity_agent import SubjectivityAgent
 
 
 class StubStats:
@@ -13,16 +12,15 @@ class StubStats:
         return {"score": self.score}
 
 
-class StubSubjectivity(SubjectivityAgent):
-    def __init__(self, fixed_score: float):
-        super().__init__()
-        self.fixed_score = fixed_score
+class FakeLLM:
+    def __init__(self, scores, decision):
+        self.scores = scores
+        self.decision = decision
+        self.calls = 0
 
-    def analyze(self, news_text: str, ticker: str | None = None):
-        return {"sentiment_score": self.fixed_score, "reasoning": "stubbed"}
-
-    def sentiment_score(self, text: str) -> float:  # pragma: no cover - deterministic override
-        return self.fixed_score
+    def chat(self, prompt: str):  # pragma: no cover - deterministic stub
+        self.calls += 1
+        return self.scores if self.calls == 1 else self.decision
 
 
 def _price_series(trend: float) -> pd.DataFrame:
@@ -40,27 +38,39 @@ def _price_series(trend: float) -> pd.DataFrame:
     return df
 
 
-def test_reasoning_bull_upweights_sentiment():
-    prices = _price_series(trend=0.5)  # upward -> bull (sma20 > sma60)
-    agent = ReasoningAgent(
-        statistics=StubStats(score=0.2),
-        risk=RiskAgent(rsi_cap=90, vol_cap=1.0),
-        subjectivity=StubSubjectivity(fixed_score=1.0),
-        reflection=None,
+def test_reasoning_selects_active_role():
+    prices = _price_series(trend=0.5)
+    llm = FakeLLM(
+        scores={"bull_score": 80, "bear_score": 10, "neutral_score": 20},
+        decision={"action": "buy", "confidence": 0.7, "reasoning": "breakout", "active_role": "bull"},
     )
-    decision = agent.decide(prices, symbol="TEST", news_text="good news", prob_threshold=0.5)
-    assert decision["action"] == "buy"
-    assert decision["regime"] == "bull"
-
-
-def test_reasoning_bear_downweights_sentiment():
-    prices = _price_series(trend=-0.5)  # downward -> bear
     agent = ReasoningAgent(
         statistics=StubStats(score=0.3),
         risk=RiskAgent(rsi_cap=90, vol_cap=1.0),
-        subjectivity=StubSubjectivity(fixed_score=-1.0),
         reflection=None,
+        llm_client=llm,
     )
-    decision = agent.decide(prices, symbol="TEST", news_text="bad news", prob_threshold=0.4)
+    decision = agent.decide(prices, symbol="TEST", prob_threshold=0.4)
+    assert decision["active_role"] == "bull"
+    assert decision["action"] == "buy"
+    assert decision["confidence"] == 0.7
+
+
+def test_reasoning_risk_override():
+    class BlockRisk(RiskAgent):
+        def approve_trade(self, signal, prices):
+            return False, "blocked"
+
+    prices = _price_series(trend=0.5)
+    llm = FakeLLM(
+        scores={"bull_score": 70, "bear_score": 20, "neutral_score": 10},
+        decision={"action": "buy", "confidence": 0.8, "reasoning": "breakout", "active_role": "bull"},
+    )
+    agent = ReasoningAgent(
+        statistics=StubStats(score=0.4),
+        risk=BlockRisk(rsi_cap=90, vol_cap=1.0),
+        reflection=None,
+        llm_client=llm,
+    )
+    decision = agent.decide(prices, symbol="TEST", prob_threshold=0.4)
     assert decision["action"] == "hold"
-    assert decision["regime"] == "bear"

@@ -24,7 +24,6 @@ class Orchestrator:
         symbol: str,
         start: str,
         end: str,
-        news_text: str = "",
         mode: data_source.DataSourceMode = data_source.DataSourceMode.YFINANCE,
         prob_threshold: float = 0.4,
     ) -> dict:
@@ -35,20 +34,21 @@ class Orchestrator:
         if latest_price is not None:
             self._update_previous_profit(latest_price)
 
-        decision = self.reasoning.decide(enriched, symbol, news_text, prob_threshold)
+        decision = self.reasoning.decide(enriched, symbol, prob_threshold)
 
         if self.db is not None and latest_price is not None:
             trade_record = {
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "symbol": symbol,
                 "signal": decision.get("action"),
-                "reasoning": decision.get("risk_reason"),
-                "market_regime": decision.get("regime"),
+                "reasoning": decision.get("reasoning"),
+                "market_regime": decision.get("active_role"),
                 "entry_price": latest_price,
                 "stat_score": decision.get("stat_score"),
-                "sentiment": decision.get("sentiment"),
-                "blended_score": decision.get("blended_score"),
                 "guidelines": decision.get("guidelines"),
+                "confidence": decision.get("confidence"),
+                "active_role": decision.get("active_role"),
+                "expert_scores": decision.get("expert_scores"),
                 "actual_profit": None,
                 "actual_outcome": None,
             }

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS trade_history (
     sentiment REAL,
     blended_score REAL,
     guidelines TEXT,
+    active_role TEXT,
+    confidence REAL,
+    expert_scores TEXT,
     actual_profit REAL,
     actual_outcome TEXT
 );
@@ -38,6 +41,29 @@ class MemoryDB:
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._ensure_columns(conn)
+
+    def _ensure_columns(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(trade_history)").fetchall()}
+        expected = {
+            "symbol": "TEXT",
+            "signal": "TEXT",
+            "reasoning": "TEXT",
+            "market_regime": "TEXT",
+            "entry_price": "REAL",
+            "stat_score": "REAL",
+            "sentiment": "REAL",
+            "blended_score": "REAL",
+            "guidelines": "TEXT",
+            "active_role": "TEXT",
+            "confidence": "REAL",
+            "expert_scores": "TEXT",
+            "actual_profit": "REAL",
+            "actual_outcome": "TEXT",
+        }
+        for name, col_type in expected.items():
+            if name not in cols:
+                conn.execute(f"ALTER TABLE trade_history ADD COLUMN {name} {col_type}")
 
     def insert_trade(self, trade_data: Dict[str, Any]) -> None:
         """Insert a new trade decision record."""
@@ -45,8 +71,8 @@ class MemoryDB:
             conn.execute(
                 """
                 INSERT INTO trade_history
-                (timestamp, symbol, signal, reasoning, market_regime, entry_price, stat_score, sentiment, blended_score, guidelines, actual_profit, actual_outcome)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (timestamp, symbol, signal, reasoning, market_regime, entry_price, stat_score, sentiment, blended_score, guidelines, active_role, confidence, expert_scores, actual_profit, actual_outcome)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade_data.get("timestamp") or datetime.datetime.utcnow().isoformat() + "Z",
@@ -59,6 +85,9 @@ class MemoryDB:
                     trade_data.get("sentiment"),
                     trade_data.get("blended_score"),
                     trade_data.get("guidelines"),
+                    trade_data.get("active_role"),
+                    trade_data.get("confidence"),
+                    json.dumps(trade_data.get("expert_scores") or {}),
                     trade_data.get("actual_profit"),
                     trade_data.get("actual_outcome"),
                 ),

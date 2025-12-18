@@ -21,7 +21,6 @@ from agents import (
     ReflectionAgent,
     RiskAgent,
     StatisticsAgent,
-    SubjectivityAgent,
 )
 from services.memory_db import MemoryDB
 from services import backtest as backtest_service
@@ -328,10 +327,9 @@ def _build_orchestrator(symbol: str, prob_threshold: float) -> Orchestrator | No
     booster, feature_cols = latest
     stats = StatisticsAgent(booster=booster, feature_columns=feature_cols)
     risk = RiskAgent()
-    subj = SubjectivityAgent()
     db = MemoryDB()
     reflection = ReflectionAgent(db=db)
-    reasoning = ReasoningAgent(statistics=stats, risk=risk, subjectivity=subj, reflection=reflection)
+    reasoning = ReasoningAgent(statistics=stats, risk=risk, reflection=reflection)
     return Orchestrator(reasoning=reasoning)
 
 
@@ -692,10 +690,8 @@ def main():
 
     price_history = data_source.load_price_history([symbol], start_str, end_str, mode=data_mode)
     use_agents = st.checkbox("使用多代理決策 (Beta)", value=False)
-    news_text = ""
     agent_decision = None
     if use_agents:
-        news_text = st.text_area("輸入新聞/情緒文本（-1~1 情緒分數）", "", height=120)
         orchestrator = _build_orchestrator(symbol, prob_threshold)
         if orchestrator is None:
             st.info("尚未有對應標的的模型，無法啟動多代理決策。")
@@ -705,7 +701,6 @@ def main():
                     symbol=symbol,
                     start=start_str,
                     end=end_str,
-                    news_text=news_text,
                     mode=data_mode,
                     prob_threshold=prob_threshold,
                 )
@@ -713,10 +708,10 @@ def main():
             if agent_decision:
                 cols = st.columns(4)
                 cols[0].metric("動作", agent_decision.get("action", "hold"))
-                cols[1].metric("綜合分數", f"{agent_decision.get('blended_score', 0):.2f}")
+                cols[1].metric("信心分數", f"{agent_decision.get('confidence', 0):.2f}")
                 cols[2].metric("模型分數", f"{agent_decision.get('stat_score', 0):.2f}")
-                cols[3].metric("情緒分數", f"{agent_decision.get('sentiment', 0):.2f}")
-                st.caption(f"Regime: {agent_decision.get('regime')} ｜ Risk: {agent_decision.get('risk_reason')}")
+                cols[3].metric("專家角色", agent_decision.get("active_role", "neutral"))
+                st.caption(f"Risk: {agent_decision.get('risk_reason')} ｜ Scores: {agent_decision.get('expert_scores')}")
                 if agent_decision.get("guidelines"):
                     st.info(f"Reflection 指南：{agent_decision['guidelines']}")
 

@@ -16,7 +16,8 @@ class ReflectionAgent:
             self.guidelines = ""
             return self.guidelines
 
-        pred = row.get("model_prediction")
+        signal = row.get("signal")
+        pred = "up" if signal == "buy" else ("down" if signal == "sell" else "flat")
         actual = row.get("actual_outcome")
         if pred == "up" and actual == "down":
             self.guidelines = "RSI 高檔鈍化時模型偏樂觀，下次降低多頭信號權重。"
