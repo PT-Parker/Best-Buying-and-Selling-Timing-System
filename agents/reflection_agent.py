@@ -16,7 +16,7 @@ class ReflectionAgent:
             self.guidelines = ""
             return self.guidelines
 
-        signal = row.get("signal")
+        signal = str(row.get("signal") or "").lower()
         pred = "up" if signal == "buy" else ("down" if signal == "sell" else "flat")
         actual = row.get("actual_outcome")
         if pred == "up" and actual == "down":

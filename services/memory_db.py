@@ -105,7 +105,7 @@ class MemoryDB:
             if row["actual_profit"] is not None and row["actual_outcome"] is not None:
                 return
             entry_price = row["entry_price"]
-            signal = row["signal"]
+            signal = str(row["signal"] or "").lower()
             if entry_price is None or signal is None:
                 return
             direction = 1 if signal == "buy" else (-1 if signal == "sell" else 0)

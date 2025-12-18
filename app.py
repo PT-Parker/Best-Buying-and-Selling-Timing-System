@@ -329,7 +329,13 @@ def _build_orchestrator(symbol: str, prob_threshold: float) -> Orchestrator | No
     risk = RiskAgent()
     db = MemoryDB()
     reflection = ReflectionAgent(db=db)
-    reasoning = ReasoningAgent(statistics=stats, risk=risk, reflection=reflection)
+    try:
+        from utils.llm_client import GeminiClient
+
+        llm_client = GeminiClient()
+    except Exception:
+        llm_client = None
+    reasoning = ReasoningAgent(statistics=stats, risk=risk, reflection=reflection, llm_client=llm_client)
     return Orchestrator(reasoning=reasoning)
 
 
@@ -702,7 +708,6 @@ def main():
                     start=start_str,
                     end=end_str,
                     mode=data_mode,
-                    prob_threshold=prob_threshold,
                 )
                 agent_decision = agent_payload.get("decision")
             if agent_decision:

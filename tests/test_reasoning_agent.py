@@ -18,7 +18,7 @@ class FakeLLM:
         self.decision = decision
         self.calls = 0
 
-    def chat(self, prompt: str):  # pragma: no cover - deterministic stub
+    def chat(self, prompt: str, json_mode: bool = True):  # pragma: no cover - deterministic stub
         self.calls += 1
         return self.scores if self.calls == 1 else self.decision
 
@@ -42,7 +42,7 @@ def test_reasoning_selects_active_role():
     prices = _price_series(trend=0.5)
     llm = FakeLLM(
         scores={"bull_score": 80, "bear_score": 10, "neutral_score": 20},
-        decision={"action": "buy", "confidence": 0.7, "reasoning": "breakout", "active_role": "bull"},
+        decision={"signal": "BUY", "confidence": 0.7, "reasoning": "breakout", "active_role": "bull"},
     )
     agent = ReasoningAgent(
         statistics=StubStats(score=0.3),
@@ -50,7 +50,7 @@ def test_reasoning_selects_active_role():
         reflection=None,
         llm_client=llm,
     )
-    decision = agent.decide(prices, symbol="TEST", prob_threshold=0.4)
+    decision = agent.decide(prices, symbol="TEST")
     assert decision["active_role"] == "bull"
     assert decision["action"] == "buy"
     assert decision["confidence"] == 0.7
@@ -64,7 +64,7 @@ def test_reasoning_risk_override():
     prices = _price_series(trend=0.5)
     llm = FakeLLM(
         scores={"bull_score": 70, "bear_score": 20, "neutral_score": 10},
-        decision={"action": "buy", "confidence": 0.8, "reasoning": "breakout", "active_role": "bull"},
+        decision={"signal": "BUY", "confidence": 0.8, "reasoning": "breakout", "active_role": "bull"},
     )
     agent = ReasoningAgent(
         statistics=StubStats(score=0.4),
@@ -72,5 +72,5 @@ def test_reasoning_risk_override():
         reflection=None,
         llm_client=llm,
     )
-    decision = agent.decide(prices, symbol="TEST", prob_threshold=0.4)
+    decision = agent.decide(prices, symbol="TEST")
     assert decision["action"] == "hold"

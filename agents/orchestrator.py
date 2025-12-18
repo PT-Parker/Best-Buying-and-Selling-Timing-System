@@ -25,7 +25,6 @@ class Orchestrator:
         start: str,
         end: str,
         mode: data_source.DataSourceMode = data_source.DataSourceMode.YFINANCE,
-        prob_threshold: float = 0.4,
     ) -> dict:
         prices = data_source.load_price_history([symbol], start, end, mode=mode)
         enriched = build_features(prices, FeatureConfig())
@@ -34,13 +33,13 @@ class Orchestrator:
         if latest_price is not None:
             self._update_previous_profit(latest_price)
 
-        decision = self.reasoning.decide(enriched, symbol, prob_threshold)
+        decision = self.reasoning.decide(enriched, symbol)
 
         if self.db is not None and latest_price is not None:
             trade_record = {
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "symbol": symbol,
-                "signal": decision.get("action"),
+                "signal": decision.get("signal") or decision.get("action"),
                 "reasoning": decision.get("reasoning"),
                 "market_regime": decision.get("active_role"),
                 "entry_price": latest_price,

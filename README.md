@@ -61,3 +61,4 @@ pytest
 - 待執行清單與日誌儲存在 session_state，重啟後需重新產生。  
 - 推送前請確保未包含任何敏感金鑰或憑證。  
 - 多代理決策已改為專家推理，不再依賴外部新聞來源。
+- 若啟用 Gemini 專家推理，請設定環境變數 `GOOGLE_API_KEY`（或 Streamlit secrets）。
